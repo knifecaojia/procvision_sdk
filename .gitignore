@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Packaging
+build/
+dist/
+*.egg
+*.egg-info/
+*.dist-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Tools & caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Project-specific
+procvision_algorithm_sdk.egg-info/
+pypi.key
+spec.md

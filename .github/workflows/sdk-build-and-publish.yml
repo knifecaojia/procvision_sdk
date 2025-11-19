@@ -1,0 +1,44 @@
+name: sdk-build-and-publish
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: algorithm-sdk/SDK
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build pytest
+          pip install .
+      - name: Run tests
+        run: pytest -q
+      - name: Validate sample project
+        run: procvision-sdk validate --project sdk_sample
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: pypa/gh-action-pypi-publish@v1.8.8
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+          repository-url: https://upload.pypi.org/legacy/
+          packages_dir: dist

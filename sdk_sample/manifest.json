@@ -1,0 +1,7 @@
+{
+  "name": "demo_sample",
+  "version": "0.0.1",
+  "entry_point": "pa_sample.main:DemoAlgorithm",
+  "description": "sample algorithm",
+  "supported_pids": ["DEMO"]
+}

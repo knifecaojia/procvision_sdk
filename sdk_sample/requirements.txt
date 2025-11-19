@@ -1,0 +1,2 @@
+numpy==1.21.6
+procvision_algorithm_sdk==0.1.0
