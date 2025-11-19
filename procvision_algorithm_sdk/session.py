@@ -1,8 +1,8 @@
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 
 class Session:
-    def __init__(self, id: str, context: Dict[str, Any] | None = None):
+    def __init__(self, id: str, context: Union[Dict[str, Any], None] = None):
         self.id = id
         self.state_store: Dict[str, Any] = {}
         self.context = context or {}
