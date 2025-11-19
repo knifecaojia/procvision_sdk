@@ -2,7 +2,6 @@ name: sdk-build-and-publish
 
 on:
   push:
-    branches: [ "main" ]
     tags: [ "v*" ]
 
 jobs:
@@ -64,10 +63,6 @@ jobs:
         run: python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.8.8
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          user: __token__
-          password: ${{ secrets.PYPI_TOKEN }}
-          repository-url: https://upload.pypi.org/legacy/
-          packages-dir: dist
           verbose: true
