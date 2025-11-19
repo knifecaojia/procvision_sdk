@@ -80,3 +80,4 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 ## 参考
 
 - `algorithm-sdk/spec.md` 与 `algorithm-sdk/algorithm_dev_tutorial.md` 提供接口契约与交付流程细节。
+- 测试版本
