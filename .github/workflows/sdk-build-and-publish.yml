@@ -6,34 +6,49 @@ on:
     tags: [ "v*" ]
 
 jobs:
-  # 任务1：测试（跑完后环境销毁，不会污染后续步骤）
+  # ===============================================================
+  # JOB 1: 测试任务
+  # 负责安装依赖、运行测试。这个环境里的临时文件会在任务结束后销毁。
+  # ===============================================================
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pytest
+          # 这一步会生成 .egg-info，但因为它只存在于 test job 中，
+          # 不会影响到下面的 release job，所以这里是安全的。
           pip install .
+          
       - name: Run tests
         run: pytest -q
+        
       - name: Validate sample project
         run: procvision-sdk validate --project sdk_sample
 
-  # 任务2：构建并发布（在一个全新的、干净的环境中运行）
+  # ===============================================================
+  # JOB 2: 发布任务
+  # 只有当 test 任务成功，且是 v* 标签推送时才运行。
+  # 这是一个全新的干净环境，没有 pip install . 留下的脏数据。
+  # ===============================================================
   release:
-    needs: test  # 必须等测试通过
-    if: startsWith(github.ref, 'refs/tags/v') # 只有打 tag 才运行
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+      
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -44,7 +59,8 @@ jobs:
           pip install build
       
       - name: Build wheel and sdist
-        # 因为没有运行过 pip install .，这里一定会生成正确的元数据
+        # 关键：这里直接构建，没有运行过 pip install .
+        # build 工具会严格读取 pyproject.toml 生成全新的、正确的元数据
         run: python -m build
 
       - name: Publish to PyPI
@@ -54,3 +70,4 @@ jobs:
           password: ${{ secrets.PYPI_TOKEN }}
           repository-url: https://upload.pypi.org/legacy/
           packages-dir: dist
+          verbose: true
