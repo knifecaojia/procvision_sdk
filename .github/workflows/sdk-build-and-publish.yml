@@ -63,6 +63,10 @@ jobs:
         run: python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.8.8
         with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+          repository-url: https://upload.pypi.org/legacy/
+          packages-dir: dist
           verbose: true
