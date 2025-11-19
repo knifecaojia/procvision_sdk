@@ -52,19 +52,20 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 ## GitHub CI/CD（自动编译、打包与发布到 PyPI）
 
-- 前提配置：
-  - 在仓库 Settings → Secrets 新建 `PYPI_TOKEN`，值为 PyPI API Token；User 设为 `__token__`。
-  - 主分支为 `main`，发版使用 `v*` 标签，例如 `v0.1.0`。
-- 工作流文件：`.github/workflows/sdk-build-and-publish.yml` 已创建，关键步骤：
-  - 检出代码并设置 Python 3.8。
-  - 安装构建与测试依赖，运行 `pytest`。
-  - 执行 `python -m build` 生成 `sdist` 与 `wheel`。
-  - 上传构建产物为 artifact。
-  - 当推送 `v*` 标签时，使用 `pypa/gh-action-pypi-publish` 发布到 PyPI。
-- 使用方式：
-  - 推送到 `main`：自动执行构建与测试。
-  - 创建并推送标签：`git tag v0.1.0 && git push origin v0.1.0`，自动发布到 PyPI。
-  - 可将 `repository-url` 替换为企业私有 PyPI 地址，用于内网发布。
+ - 前提配置：
+   - 在仓库 Settings → Secrets 新建 `PYPI_TOKEN`（PyPI API Token，User 设为 `__token__`）。
+   - 在仓库 Settings → Secrets 新建 `TEST_PYPI_TOKEN`（TestPyPI API Token，User 设为 `__token__`）。
+   - 主分支 `main` 使用版本标签 `v*`（例如 `v0.1.0`）触发正式发布。
+ - 工作流文件：`.github/workflows/sdk-build-and-publish.yml` 已创建，关键步骤：
+   - 检出代码并设置 Python 3.10。
+   - 安装构建与测试依赖，运行 `pytest` 与示例校验。
+   - 执行 `python -m build` 生成 `sdist` 与 `wheel`。
+   - 推送到 `dev` 分支时，构建并发布到 TestPyPI（使用 `TEST_PYPI_TOKEN`）。
+   - 推送 `v*` 标签时，构建并发布到 PyPI（使用 `PYPI_TOKEN`）。
+ - 使用方式：
+   - 推送到 `dev`：自动构建并发布到 TestPyPI，用于验证打包/发布流程。
+   - 创建并推送版本标签：`git tag v0.1.0 && git push origin v0.1.0`，自动发布到 PyPI。
+   - 如需发布到企业私有 PyPI，可将 `repository-url` 替换为企业私有地址。
 
 ## 目录与文件
 
@@ -74,7 +75,7 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 ## 版本与兼容
 
-- 要求 Python `>=3.8`。
+ - 要求 Python `>=3.8`（CI 使用 `3.10`）。
 - 最小依赖为 `numpy>=1.21`。
 
 ## 参考
