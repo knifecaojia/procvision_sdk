@@ -36,3 +36,4 @@ htmlcov/
 procvision_algorithm_sdk.egg-info/
 pypi.key
 spec.md
+CLAUDE.md

@@ -31,6 +31,14 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
         checks.append({"name": name, "result": "PASS" if ok else "FAIL", "message": message})
 
     manifest_path = manifest or (os.path.join(project, "manifest.json") if project else None)
+    project_sys_path = project
+    if (not manifest_path or not os.path.exists(manifest_path)) and project:
+        base_dir = os.path.dirname(__file__)
+        root = os.path.abspath(os.path.join(base_dir, os.pardir))
+        alt_manifest = os.path.join(os.path.join(root, project), "manifest.json")
+        if os.path.exists(alt_manifest):
+            manifest_path = alt_manifest
+            project_sys_path = os.path.join(root, project)
     if not manifest_path or not os.path.exists(manifest_path):
         add("manifest_exists", False, "manifest.json not found")
         summary = {"status": "FAIL", "passed": 0, "failed": 1}
@@ -50,7 +58,7 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
 
     entry_point = mf.get("entry_point", "")
     try:
-        cls = _import_entry(entry_point, project)
+        cls = _import_entry(entry_point, project_sys_path)
         ok = issubclass(cls, BaseAlgorithm)
         add("entry_import", ok, "imported")
     except Exception as e:
