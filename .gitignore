@@ -142,3 +142,5 @@ Thumbs.db
 # Project specific ignores
 procvision_algorithm_sdk.egg-info/
 *.key
+.archived/
+.agent/

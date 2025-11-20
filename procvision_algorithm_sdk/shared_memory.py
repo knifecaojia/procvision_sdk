@@ -2,9 +2,32 @@ from typing import Any, Dict
 
 import numpy as np
 
+_DEV_SHM: Dict[str, bytes] = {}
+
+
+def dev_write_image_to_shared_memory(shared_mem_id: str, image_bytes: bytes) -> None:
+    _DEV_SHM[shared_mem_id] = image_bytes
+
+
+def dev_clear_shared_memory(shared_mem_id: str) -> None:
+    _DEV_SHM.pop(shared_mem_id, None)
+
 
 def read_image_from_shared_memory(shared_mem_id: str, image_meta: Dict[str, Any]) -> Any:
-    height = int(image_meta.get("height", 0))
     width = int(image_meta.get("width", 0))
-    channels = int(image_meta.get("channels", 3))
-    return np.zeros((height, width, channels), dtype=np.uint8)
+    height = int(image_meta.get("height", 0))
+    if width <= 0 or height <= 0:
+        return None
+    data = _DEV_SHM.get(shared_mem_id)
+    if data:
+        try:
+            from PIL import Image  # type: ignore
+            import io
+            img = Image.open(io.BytesIO(data))
+            arr = np.array(img)
+            if arr.ndim == 2:
+                arr = np.stack([arr, arr, arr], axis=-1)
+            return arr
+        except Exception:
+            pass
+    return np.zeros((height, width, 3), dtype=np.uint8)
