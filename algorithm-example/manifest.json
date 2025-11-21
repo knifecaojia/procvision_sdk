@@ -1,0 +1,25 @@
+{
+  "name": "algorithm-example",
+  "version": "1.0",
+  "entry_point": "algorithm_example.main:AlgorithmExample",
+  "description": "示例算法（p001/p002）",
+  "supported_pids": ["p001", "p002"],
+  "steps": [
+    {
+      "index": 1,
+      "name": "定位主板",
+      "params": [
+        {"key": "roi", "type": "rect", "required": true, "description": "定位区域"},
+        {"key": "exposure", "type": "float", "default": 12.5, "min": 8.0, "max": 16.0, "unit": "ms"}
+      ]
+    },
+    {
+      "index": 2,
+      "name": "检测左上角螺丝",
+      "params": [
+        {"key": "threshold", "type": "float", "default": 0.7, "min": 0.5, "max": 0.9, "description": "置信度阈值"},
+        {"key": "mode", "type": "enum", "choices": ["fast", "accurate"], "default": "fast"}
+      ]
+    }
+  ]
+}

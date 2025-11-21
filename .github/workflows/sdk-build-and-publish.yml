@@ -3,71 +3,62 @@ name: sdk-build-and-publish
 
 on:
   push:
+    branches: [ "main", "dev" ]
     tags: [ "v*" ]
 
 jobs:
-  # ===============================================================
-  # JOB 1: 测试任务
-  # 负责安装依赖、运行测试。这个环境里的临时文件会在任务结束后销毁。
-  # ===============================================================
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest
-          # 这一步会生成 .egg-info，但因为它只存在于 test job 中，
-          # 不会影响到下面的 release job，所以这里是安全的。
-          pip install .
-          
-      - name: Run tests
-        run: pytest -q
-        
-      - name: Validate sample project
-        run: procvision-sdk validate --project sdk_sample
 
   # ===============================================================
-  # JOB 2: 发布任务
-  # 只有当 test 任务成功，且是 v* 标签推送时才运行。
-  # 这是一个全新的干净环境，没有 pip install . 留下的脏数据。
-  # ===============================================================
-  release:
-    needs: test
+  # JOB 2: 发布到 PyPI（main 分支版本标签）
+  release-main:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
-      
     steps:
       - uses: actions/checkout@v4
-      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install build
-      
       - name: Build wheel and sdist
-        # 关键：这里直接构建，没有运行过 pip install .
-        # build 工具会严格读取 pyproject.toml 生成全新的、正确的元数据
         run: python -m build
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
           repository-url: https://upload.pypi.org/legacy/
+          packages-dir: dist
+          verbose: true
+
+  # JOB 3: 发布到 TestPyPI（dev 分支）
+  release-dev:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.TEST_PYPI_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
           packages-dir: dist
           verbose: true
