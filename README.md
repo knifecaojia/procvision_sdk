@@ -65,7 +65,7 @@ class MyAlgo(BaseAlgorithm):
 - 校验算法包：
   - `procvision-cli validate --project ./your_algo_project`
 - 本地模拟运行：
-  - `procvision-cli run ./your_algo_project --pid p001 --image ./test.jpg --params '{"threshold":0.8}'`
+  - `procvision-cli run ./your_algo_project --pid p001 --image ./test.jpg --json`
 
 ## 离线交付
 
@@ -73,7 +73,7 @@ class MyAlgo(BaseAlgorithm):
 - 下载 wheels：
 
 ```
-pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-version 3.8 --implementation cp --abi cp38
+pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-version 3.10 --implementation cp --abi cp310
 ```
 
 - 打包 zip：包含源码目录、`manifest.json`、`requirements.txt`、`wheels/` 与可选 `assets/`
@@ -91,7 +91,7 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 ## 版本与兼容
 
-- 要求 Python `>=3.8`
+- 要求 Python `>=3.10`
 - 依赖：`numpy>=1.21`
 
 ## 参考

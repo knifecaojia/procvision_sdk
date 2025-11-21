@@ -45,7 +45,7 @@
 * **标准化交付物**: 算法的最终交付物**必须**是一个 **.zip** **格式的压缩包，其内部结构需严格遵循本文档第四节的规定。**
 * **目标运行环境**: 所有算法的最终运行环境是固定的。用户方将提供工作站的精确环境规格，算法团队必须基于此规格构建交付包。
 * **操作系统**: **[例如: Windows 10 x64 / Ubuntu 20.04 x86_64]**
-* **Python版本**: **[例如: Python 3.8.10]**
+* **Python版本**: **[例如: Python 3.10.x]**
 * **核心硬件**: **[例如: Intel Core i5-9400F, NVIDIA GeForce RTX 4060 with CUDA 12.6]**
 
 ---
@@ -794,13 +794,63 @@ SDK 提供 `procvision-cli` 命令行工具：
 ```bash
 # 1. 验证算法包结构与 manifest.json
 procvision-cli validate ./my_algorithm_project/
+# 可省略项目路径，默认当前目录
+procvision-cli validate
 
 # 2. 模拟运行算法 (Dev Runner)
 procvision-cli run ./my_algorithm_project/ \
     --pid A01 \
     --image ./test_images/sample.jpg \
     --params '{"threshold": 0.8}'
+ 
+# 3. 构建离线交付包 (Package)
+procvision-cli package ./my_algorithm_project/ \
+    --output ./my_algorithm_project-offline.zip \
+    --auto-freeze \
+    --wheels-platform win_amd64 \
+    --python-version 3.10 \
+    --implementation cp \
+    --abi cp310
+
+# 4. 初始化脚手架 (Init)
+procvision-cli init algorithm-example \
+    --pids p001,p002 \
+    --version 1.0.0 \
+    --dir ./algorithm-example
 ```
+
+**CLI 参数与输出规范（新增）**
+
+- 验证命令 `validate`
+  - 默认项目：省略路径时默认为当前目录 `.`（等价于 `procvision-cli validate .`）
+  - 参数：`validate [project] [--manifest <path>] [--zip <path>] [--json]`
+  - 输出：默认人类可读清单（逐项 ✅/❌ 与提示）；`--json` 返回机器可读 JSON
+
+- 运行命令 `run`
+  - 用法：`run <project> --pid <pid> --image <path> [--params <json>] [--json]`
+  - 输出：默认人类可读（显示预执行与执行状态、NG 原因与缺陷数）；`--json` 返回原始结构
+
+- 打包命令 `package`（新）
+  - 用法：`package <project> [--output <zip>] [--requirements <path>] [--auto-freeze] [--wheels-platform <p>] [--python-version <v>] [--implementation <impl>] [--abi <abi>] [--skip-download]`
+  - 行为：
+    - 自动生成或使用 `requirements.txt`
+    - 可按目标环境下载 wheels（`--wheels-platform/--python-version/--implementation/--abi`）
+    - 打包 `源码/manifest/requirements/assets/` 与 `wheels/` 到 zip（不保存报告）
+  - 输出：人类可读的结果行，例如 `打包成功: <zip>` 或具体错误说明
+  - 短参数与默认值（便捷用法）：
+    - `-o` 等价 `--output`
+    - `-r` 等价 `--requirements`
+    - `-a` 等价 `--auto-freeze`
+    - `-w` 等价 `--wheels-platform`，默认 `win_amd64`
+    - `-p` 等价 `--python-version`，默认 `3.10`
+    - `-i` 等价 `--implementation`
+    - `-b` 等价 `--abi`
+    - `-s` 等价 `--skip-download`
+
+- 初始化命令 `init`（新）
+  - 用法：`init <name> [-d|--dir <dir>] [--pids <p1,p2>] [-v|--version <ver>] [-e|--desc <text>]`
+  - 行为：生成 `manifest.json` 与源码包目录，并在 `main.py` 中以注释形式标注需要算法团队修改的位置（PID 列表、步骤 schema、检测逻辑等）
+  - 输出：`初始化成功: <path>` 与后续修改提示
 
 #### 3.7.2. Dev Runner 行为
 
@@ -810,7 +860,7 @@ Dev Runner 运行在开发者本地环境，主要职责如下：
 2. **协议校验**: 验证算法发出的 JSON 消息是否符合 3.6 节定义的协议格式。
 3. **Schema 校验**: 根据 `get_info()` 返回的 schema，验证 `user_params` 和返回值的字段类型。
 4. **资源模拟**:
-   * **共享内存**: 使用本地临时文件或 System V 共享内存模拟，将本地图片加载并传递给算法。
+   * **共享内存**: 使用本地临时文件或 System V 共享内存模拟，将本地图片加载并传递给算法；`shared_mem_id` 绑定当前会话，约定为 `dev-shm:<session.id>`，以便日志与诊断可定位到具体会话。开发模式中会先将本地图片字节写入共享内存，再由算法通过 `read_image_from_shared_memory(shared_mem_id, image_meta)` 读取并解码。
    * **Session**: 创建虚拟 Session 对象，模拟状态存储。
 5. **报告生成**: 运行结束后生成简单的 HTML/JSON 报告，展示耗时、返回值和潜在错误。
 
@@ -1933,6 +1983,21 @@ def execute(self, ...) -> Dict[str, Any]:
 **注意：** `--platform` **,** `--python-version` **等参数必须与平台方提供的目标环境规格严格匹配。**
 
 * **打包最终交付物**:
+  可通过 CLI 一键打包，或手动压缩。
+
+  **CLI 打包（推荐）**：
+
+  ```bash
+  procvision-cli package ./my_algorithm_project/ \
+      --output ./my_algorithm_project-offline.zip \
+      --auto-freeze \
+      --wheels-platform win_amd64 \
+      --python-version 3.10 \
+      --implementation cp \
+      --abi cp310
+  ```
+
+  **手动压缩（备选）**：
   将以下所有内容压缩成一个 **.zip** **文件：**
 * **您的算法源代码目录 (例如****pa_screw_check/**)
 * **requirements.txt** **文件**
@@ -1950,12 +2015,17 @@ def execute(self, ...) -> Dict[str, Any]:
   ├── assets/
   │   └── weld_unet.pt
   ├── wheels/
-  │   ├── numpy-1.21.6-cp38-cp38-win_amd64.whl
-  │   ├── opencv_python-4.5.5.64-cp38-cp38-win_amd64.whl
+  │   ├── numpy-1.21.6-cp310-cp310-win_amd64.whl
+  │   ├── opencv_python-4.5.5.64-cp310-cp310-win_amd64.whl
   │   └── ... (所有其他依赖的.whl文件)
   ├── manifest.json
   └── requirements.txt
   ```
+
+**CLI 输出约定（新增）**：
+
+- 所有命令默认输出人类可读的结果摘要与提示信息（不保存到文件）
+- 如需机器可读结果，统一使用 `--json` 输出到控制台
 
 **命名规范**: 推荐使用 **[算法名]-v[版本号]-offline.zip** **的格式。**
 
@@ -1969,7 +2039,7 @@ CI/CD 针对的是 `procvision_algorithm_sdk` 仓库，而非具体算法实现�
    - `v*` 标签推送：在通过测试后构建产物并发布到内部PyPI（或GitHub Packages）。
 2. **流水线阶段**
 
-   - Checkout 代码，设置与SDK兼容的 Python 版本（如3.8）。
+  - Checkout 代码，设置与SDK兼容的 Python 版本（如3.10）。
    - 安装开发依赖，执行 `ruff`/`mypy` 等静态检查及 `pytest` 单元/集成测试。
    - 调用 `python -m build` 生成 sdist 与 wheel。
    - 上传构建产物为 workflow artifact；若为标签构建，使用 `pypa/gh-action-pypi-publish` 将 wheel 上传至内网PyPI或 GitHub Packages。
@@ -1990,7 +2060,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: "3.10"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

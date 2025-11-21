@@ -144,3 +144,15 @@ procvision_algorithm_sdk.egg-info/
 *.key
 .archived/
 .agent/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.vscode/
+.idea/
+.DS_Store
+wheels/
+*.zip
