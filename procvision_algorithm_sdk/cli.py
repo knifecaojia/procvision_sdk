@@ -3,11 +3,16 @@ import importlib
 import json
 import os
 import sys
+import time
 import zipfile
+import subprocess
+import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import BaseAlgorithm
 from .session import Session
+from .shared_memory import dev_write_image_to_shared_memory
 
 
 def _load_manifest(manifest_path: str) -> Dict[str, Any]:
@@ -24,60 +29,85 @@ def _import_entry(entry_point: str, sys_path: Optional[str]) -> Any:
     return cls
 
 
+def _add(checks: List[Dict[str, Any]], name: str, ok: bool, message: str = "") -> None:
+    checks.append({"name": name, "result": "PASS" if ok else "FAIL", "message": message})
+
+
 def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional[str]) -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
 
-    def add(name: str, ok: bool, message: str = "") -> None:
-        checks.append({"name": name, "result": "PASS" if ok else "FAIL", "message": message})
-
     manifest_path = manifest or (os.path.join(project, "manifest.json") if project else None)
+    project_sys_path = project
+    if (not manifest_path or not os.path.exists(manifest_path)) and project:
+        base_dir = os.path.dirname(__file__)
+        root = os.path.abspath(os.path.join(base_dir, os.pardir))
+        alt_manifest = os.path.join(os.path.join(root, project), "manifest.json")
+        if os.path.exists(alt_manifest):
+            manifest_path = alt_manifest
+            project_sys_path = os.path.join(root, project)
     if not manifest_path or not os.path.exists(manifest_path):
-        add("manifest_exists", False, "manifest.json not found")
+        _add(checks, "manifest_exists", False, "manifest.json not found")
         summary = {"status": "FAIL", "passed": 0, "failed": 1}
         return {"summary": summary, "checks": checks}
 
     try:
         mf = _load_manifest(manifest_path)
-        add("manifest_load", True, "loaded")
+        _add(checks, "manifest_load", True, "loaded")
     except Exception as e:
-        add("manifest_load", False, str(e))
+        _add(checks, "manifest_load", False, str(e))
         summary = {"status": "FAIL", "passed": 1, "failed": 1}
         return {"summary": summary, "checks": checks}
 
     required = ["name", "version", "entry_point", "supported_pids"]
     missing = [k for k in required if k not in mf]
-    add("manifest_fields", len(missing) == 0, ",".join(missing))
+    _add(checks, "manifest_fields", len(missing) == 0, ",".join(missing))
 
     entry_point = mf.get("entry_point", "")
     try:
-        cls = _import_entry(entry_point, project)
+        cls = _import_entry(entry_point, project_sys_path)
         ok = issubclass(cls, BaseAlgorithm)
-        add("entry_import", ok, "imported")
+        _add(checks, "entry_import", ok, "imported")
     except Exception as e:
-        add("entry_import", False, str(e))
+        _add(checks, "entry_import", False, str(e))
+        cls = None
 
-    smoke_ok = False
-    try:
-        pid = mf.get("pid", "demo")
-        alg = cls(pid)
-        info = alg.get_info()
-        step_schema_ok = isinstance(info, dict) and isinstance(info.get("steps", []), list)
-        add("step_schema", step_schema_ok, "steps present")
-        _ = alg.pre_execute(0, Session("session-demo"), "shared", {"width": 8, "height": 8, "channels": 3}, {})
-        result = alg.execute(0, Session("session-demo"), "shared", {"width": 8, "height": 8, "channels": 3}, {})
-        smoke_ok = isinstance(result, dict)
-        add("smoke_execute", smoke_ok, "done")
-        status = result.get("status")
-        suggest = result.get("suggest_action")
-        err_type = result.get("error_type")
-        status_ok = status in {"OK", "NG", "ERROR"}
-        suggest_ok = suggest in {None, "retry", "skip", "abort"}
-        err_ok = err_type in {None, "recoverable", "fatal"}
-        add("io_contract_status", status_ok, str(status))
-        add("io_contract_suggest", suggest_ok, str(suggest))
-        add("io_contract_error_type", err_ok, str(err_type))
-    except Exception as e:
-        add("smoke_execute", False, str(e))
+    if cls:
+        try:
+            alg = cls()
+            info = alg.get_info()
+            steps_ok = isinstance(info, dict) and isinstance(info.get("steps", []), list)
+            _add(checks, "get_info", isinstance(info, dict), "dict returned")
+            _add(checks, "step_schema", steps_ok, "steps present")
+
+            mf_pids = mf.get("supported_pids", [])
+            info_pids = info.get("supported_pids", [])
+            _add(checks, "supported_pids_match", mf_pids == info_pids, f"manifest={mf_pids} info={info_pids}")
+
+            pid = (mf_pids or ["A01"])[0]
+            session = Session("session-demo", {"product_code": pid, "operator": "dev", "trace_id": "trace-demo"})
+            image_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev"}
+            pre = alg.pre_execute(0, pid, session, {}, f"dev-shm:{session.id}", image_meta)
+            _add(checks, "pre_execute_return_dict", isinstance(pre, dict), "dict")
+            pre_status = pre.get("status")
+            _add(checks, "pre_status_valid", pre_status in {"OK", "ERROR"}, str(pre_status))
+            _add(checks, "pre_message_present", bool(pre.get("message")), str(pre.get("message")))
+
+            exe = alg.execute(0, pid, session, {}, f"dev-shm:{session.id}", image_meta)
+            _add(checks, "execute_return_dict", isinstance(exe, dict), "dict")
+            exe_status = exe.get("status")
+            _add(checks, "execute_status_valid", exe_status in {"OK", "ERROR"}, str(exe_status))
+            if exe_status == "OK":
+                data = exe.get("data", {})
+                rs = data.get("result_status")
+                _add(checks, "execute_result_status_valid", rs in {"OK", "NG", None}, str(rs))
+                if rs == "NG":
+                    ng_reason_ok = "ng_reason" in data and bool(data.get("ng_reason"))
+                    _add(checks, "ng_reason_present", ng_reason_ok, str(data.get("ng_reason")))
+                    dr = data.get("defect_rects", [])
+                    _add(checks, "defect_rects_type", isinstance(dr, list), f"len={len(dr)}")
+                    _add(checks, "defect_rects_count_limit", len(dr) <= 20, f"len={len(dr)}")
+        except Exception as e:
+            _add(checks, "smoke_execute", False, str(e))
 
     if zip_path:
         try:
@@ -86,11 +116,11 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
                 m1 = any(n.endswith("manifest.json") for n in names)
                 m2 = any(n.endswith("requirements.txt") for n in names)
                 m3 = any(n.endswith("/wheels/") or "/wheels/" in n for n in names)
-                add("zip_manifest", m1, "manifest")
-                add("zip_requirements", m2, "requirements")
-                add("zip_wheels", m3, "wheels")
+                _add(checks, "zip_manifest", m1, "manifest")
+                _add(checks, "zip_requirements", m2, "requirements")
+                _add(checks, "zip_wheels", m3, "wheels")
         except Exception as e:
-            add("zip_open", False, str(e))
+            _add(checks, "zip_open", False, str(e))
 
     passed = sum(1 for c in checks if c["result"] == "PASS")
     failed = sum(1 for c in checks if c["result"] == "FAIL")
@@ -98,17 +128,454 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
     return {"summary": {"status": status, "passed": passed, "failed": failed}, "checks": checks}
 
 
+def _print_validate_human(report: Dict[str, Any]) -> None:
+    summary = report.get("summary", {})
+    checks = report.get("checks", [])
+    status = summary.get("status", "FAIL")
+    print(f"校验结果: {status} | 通过: {summary.get('passed', 0)} | 失败: {summary.get('failed', 0)}")
+    for c in checks:
+        r = c.get("result")
+        name = c.get("name")
+        msg = c.get("message")
+        marker = "✅" if r == "PASS" else "❌"
+        if msg:
+            print(f"{marker} {name}: {msg}")
+        else:
+            print(f"{marker} {name}")
+
+
+def run(project: str, pid: str, image_path: str, params_json: Optional[str]) -> Dict[str, Any]:
+    manifest_path = os.path.join(project, "manifest.json")
+    mf = _load_manifest(manifest_path)
+    cls = _import_entry(mf["entry_point"], project)
+    alg = cls()
+    session = Session(
+        f"session-{int(time.time()*1000)}",
+        {"product_code": pid, "operator": "dev", "trace_id": f"trace-{int(time.time()*1000)}"},
+    )
+    shared_mem_id = f"dev-shm:{session.id}"
+    try:
+        with open(image_path, "rb") as f:
+            data = f.read()
+        dev_write_image_to_shared_memory(shared_mem_id, data)
+    except Exception:
+        pass
+
+    try:
+        import PIL.Image as Image  # type: ignore
+        img = Image.open(image_path)
+        width, height = img.size
+    except Exception:
+        width, height = 640, 480
+
+    image_meta = {"width": int(width), "height": int(height), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev"}
+    try:
+        user_params = json.loads(params_json) if params_json else {}
+    except Exception:
+        user_params = {}
+
+    pre = alg.pre_execute(1, pid, session, user_params, shared_mem_id, image_meta)
+    exe = alg.execute(1, pid, session, user_params, shared_mem_id, image_meta)
+    return {"pre_execute": pre, "execute": exe}
+
+
+def _print_run_human(result: Dict[str, Any]) -> None:
+    pre = result.get("pre_execute", {})
+    exe = result.get("execute", {})
+    print("预执行:")
+    print(f"  status: {pre.get('status')} | message: {pre.get('message')}")
+    data = exe.get("data", {})
+    print("执行:")
+    print(f"  status: {exe.get('status')} | result_status: {data.get('result_status')}")
+    if data.get("result_status") == "NG":
+        print(f"  ng_reason: {data.get('ng_reason')}")
+        dr = data.get("defect_rects", [])
+        print(f"  defect_rects: {len(dr)}")
+
+
+def package(
+    project: str,
+    output: Optional[str],
+    requirements: Optional[str],
+    auto_freeze: bool,
+    wheels_platform: Optional[str],
+    python_version: Optional[str],
+    implementation: Optional[str],
+    abi: Optional[str],
+    skip_download: bool,
+) -> Dict[str, Any]:
+    manifest_path = os.path.join(project, "manifest.json")
+    mf = _load_manifest(manifest_path)
+    name = mf.get("name", "algorithm")
+    version = mf.get("version", "0.0.0")
+    zip_name = output or f"{name}-v{version}-offline.zip"
+    req_path = requirements or os.path.join(project, "requirements.txt")
+    if not os.path.isfile(req_path):
+        if auto_freeze:
+            try:
+                text = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
+                with open(req_path, "w", encoding="utf-8") as f:
+                    f.write(text)
+            except Exception as e:
+                return {"status": "ERROR", "message": str(e)}
+        else:
+            return {"status": "ERROR", "message": "requirements.txt 不存在，请提供 --requirements 或使用 --auto-freeze"}
+    sanitized_req = os.path.join(project, "requirements.sanitized.txt")
+    try:
+        with open(req_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        sanitized_lines: List[str] = []
+        for line in lines:
+            s = line.strip()
+            if not s:
+                continue
+            s = s.split("#sha256=")[0].strip()
+            parts = s.split()
+            parts = [p for p in parts if not p.startswith("--hash=")]
+            s = " ".join(parts)
+            sanitized_lines.append(s + "\n")
+        with open(sanitized_req, "w", encoding="utf-8") as f:
+            f.writelines(sanitized_lines)
+        req_path = sanitized_req
+    except Exception:
+        pass
+    wheels_dir = os.path.join(project, "wheels")
+    os.makedirs(wheels_dir, exist_ok=True)
+    if not skip_download:
+        cfg = {}
+        cfg_path = os.path.join(project, ".procvision_env.json")
+        if os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                cfg = {}
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "-r",
+            req_path,
+            "-d",
+            wheels_dir,
+        ]
+        wp = wheels_platform or cfg.get("wheels_platform") or "win_amd64"
+        pv = python_version or cfg.get("python_version") or "3.10"
+        impl = implementation or cfg.get("implementation") or "cp"
+        ab = abi or cfg.get("abi") or "cp310"
+        cmd += ["--platform", wp, "--python-version", pv, "--implementation", impl, "--abi", ab]
+        cmd += ["--only-binary=:all:"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            output = (res.stderr or "") + ("\n" + res.stdout if res.stdout else "")
+            hint = ""
+            if "No matching distribution found" in output:
+                hint = "\n提示: 请确保 requirements 版本在目标环境 (python=" + pv + ", abi=" + ab + ") 有可用的 wheel；建议在目标 Python 版本的虚拟环境中执行 pip freeze 生成 requirements.txt。"
+            return {"status": "ERROR", "message": (output.strip() or "pip download 失败") + hint}
+    base = os.path.abspath(project)
+    zip_path = os.path.abspath(zip_name)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, files in os.walk(base):
+            rel_root = os.path.relpath(root, base)
+            if rel_root.startswith(".venv"):
+                continue
+            if rel_root.startswith("wheels"):
+                continue
+            for f in files:
+                p = os.path.join(root, f)
+                arc = os.path.join(os.path.basename(base), rel_root, f)
+                z.write(p, arcname=arc)
+        for root, dirs, files in os.walk(wheels_dir):
+            for f in files:
+                p = os.path.join(root, f)
+                rel = os.path.relpath(p, base)
+                z.write(p, arcname=rel)
+    return {"status": "OK", "zip": zip_path}
+
+
+def _sanitize_module_name(name: str) -> str:
+    import re
+    s = name.strip().lower()
+    s = re.sub(r"[^a-z0-9_]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "algorithm"
+
+
+def _class_name_from(name: str) -> str:
+    import re
+    parts = re.split(r"[^a-zA-Z0-9]+", name)
+    title = "".join(p.capitalize() for p in parts if p)
+    return (title or "Algorithm") + "Algorithm"
+
+
+def init_project(name: str, target_dir: Optional[str], pids_csv: Optional[str], version: str, description: Optional[str]) -> Dict[str, Any]:
+    safe_mod = _sanitize_module_name(name)
+    class_name = _class_name_from(name)
+    pids = [p.strip() for p in (pids_csv or "").split(",") if p.strip()]
+    if not pids:
+        pids = ["PID_TO_FILL"]
+    base = os.path.abspath(target_dir or f"{safe_mod}")
+    pkg_dir = os.path.join(base, safe_mod)
+    os.makedirs(pkg_dir, exist_ok=True)
+
+    manifest = {
+        "name": name,
+        "version": version,
+        "entry_point": f"{safe_mod}.main:{class_name}",
+        "description": description or f"{name} 算法包",
+        "supported_pids": pids,
+        "steps": [
+            {
+                "index": 0,
+                "name": "示例步骤",
+                "params": [
+                    {"key": "threshold", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0}
+                ],
+            }
+        ],
+    }
+
+    with open(os.path.join(base, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+        f.write(f"__all__ = [\"{class_name}\"]\n")
+
+    main_py = f"""
+from typing import Any, Dict
+
+from procvision_algorithm_sdk import BaseAlgorithm, Session, read_image_from_shared_memory
+
+
+class {class_name}(BaseAlgorithm):
+    def __init__(self) -> None:
+        super().__init__()
+        # TODO: 修改为你的 PID 列表，并确保与 manifest.json 中的 supported_pids 保持一致
+        self._supported_pids = {pids}
+        # TODO: 如需加载模型与重资源，请在 setup() 中实现，并设置 self._model_version
+
+    def get_info(self) -> Dict[str, Any]:
+        # 必须返回与 manifest.json 一致的 name/version/supported_pids/steps
+        # TODO: 如需增加步骤与参数，请在 steps 中定义 schema（type: int/float/rect/enum/bool/string）
+        return {{
+            "name": "{name}",
+            "version": "{version}",
+            "description": "{description or name + ' 算法包'}",
+            "supported_pids": self._supported_pids,
+            "steps": [
+                {{
+                    "index": 0,
+                    "name": "示例步骤",
+                    "params": [
+                        {{"key": "threshold", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0}}
+                    ],
+                }}
+            ],
+        }}
+
+    def pre_execute(
+        self,
+        step_index: int,
+        pid: str,
+        session: Session,
+        user_params: Dict[str, Any],
+        shared_mem_id: str,
+        image_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        # TODO: 在此实现准备逻辑（如光照检查、模板读取等）
+        # 返回结构：{{"status":"OK|ERROR","message":"提示信息","debug":{{...}}}}
+        if pid not in self._supported_pids:
+            return {{"status": "ERROR", "message": f"不支持的产品型号: {{pid}}", "error_code": "1001"}}
+        img = read_image_from_shared_memory(shared_mem_id, image_meta)
+        if img is None:
+            return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
+        return {{"status": "OK", "message": "准备就绪", "debug": {{"latency_ms": 0.0}}}}
+
+    def execute(
+        self,
+        step_index: int,
+        pid: str,
+        session: Session,
+        user_params: Dict[str, Any],
+        shared_mem_id: str,
+        image_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        # TODO: 在此实现核心检测逻辑，并按规范返回 OK/ERROR；业务判定在 data.result_status（OK/NG）
+        # NG 时需要提供 data.ng_reason 与 data.defect_rects（最多 20 个）
+        img = read_image_from_shared_memory(shared_mem_id, image_meta)
+        if img is None:
+            return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
+        return {{"status": "OK", "data": {{"result_status": "OK", "defect_rects": [], "debug": {{"latency_ms": 0.0}}}}}}
+"""
+    with open(os.path.join(pkg_dir, "main.py"), "w", encoding="utf-8") as f:
+        f.write(main_py)
+
+    try:
+        impl = "cp"
+        abi = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        plat = "win_amd64" if os.name == "nt" else None
+        env_cfg = {
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "implementation": impl,
+            "abi": abi,
+            "wheels_platform": plat,
+            "auto_freeze": True,
+        }
+        with open(os.path.join(base, ".procvision_env.json"), "w", encoding="utf-8") as f:
+            json.dump(env_cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return {"status": "OK", "path": base}
+
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="procvision-sdk")
+    parser = argparse.ArgumentParser(
+        prog="procvision-cli",
+        description=(
+            "ProcVision 算法开发 Dev Runner CLI\n"
+            "- 本地验证算法包结构与入口实现\n"
+            "- 使用本地图片模拟共享内存并调用 pre_execute/execute\n"
+            "- 输出 JSON 报告，便于快速自测"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  验证项目: procvision-cli validate ./algorithm-example\n"
+            "  验证压缩包: procvision-cli validate --zip ./algo.zip\n"
+            "  本地运行: procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg --json\n"
+            "  构建离线包(使用默认参数): procvision-cli package ./algorithm-example\n"
+        ),
+    )
     sub = parser.add_subparsers(dest="command")
-    v = sub.add_parser("validate")
-    v.add_argument("--project", type=str, default=None)
-    v.add_argument("--manifest", type=str, default=None)
-    v.add_argument("--zip", type=str, default=None)
+
+    v = sub.add_parser(
+        "validate",
+        help="校验算法包结构与入口实现",
+        description="校验 manifest、入口类、supported_pids 一致性与返回结构",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    v.add_argument("project", nargs="?", default=".", help="算法项目根目录，默认当前目录")
+    v.add_argument("--manifest", type=str, default=None, help="指定 manifest.json 路径（可替代 --project）")
+    v.add_argument("--zip", type=str, default=None, help="离线交付 zip 包路径（检查 wheels/ 与必需文件）")
+    v.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+
+    r = sub.add_parser(
+        "run",
+        help="本地模拟运行算法",
+        description=(
+            "使用本地图片写入共享内存并调用 pre_execute/execute。\n"
+            "注意: pid 必须在 manifest 的 supported_pids 中"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    r.add_argument("project", type=str, help="算法项目根目录，包含 manifest.json 与源码")
+    r.add_argument("--pid", type=str, required=True, help="产品型号编码（必须在 supported_pids 中）")
+    r.add_argument("--image", type=str, required=True, help="本地图片路径（JPEG/PNG），将写入共享内存")
+    r.add_argument(
+        "--params",
+        type=str,
+        default=None,
+        help="JSON 字符串形式的用户参数，例如 '{\"threshold\":0.8}'",
+    )
+    r.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+
+    p = sub.add_parser(
+        "package",
+        help="构建离线交付 zip 包",
+        description="下载 wheels 并打包源码、manifest、requirements 与 assets",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    p.add_argument("project", type=str, help="算法项目根目录")
+    p.add_argument("-o", "--output", type=str, default=None, help="输出 zip 文件路径，默认按 name/version 生成")
+    p.add_argument("-r", "--requirements", type=str, default=None, help="requirements.txt 路径，默认使用项目内文件或自动生成")
+    p.add_argument("-a", "--auto-freeze", action="store_true", default=True, help="缺少 requirements.txt 时自动生成 (pip freeze)")
+    p.add_argument("-w", "--wheels-platform", type=str, default=None, help="wheels 目标平台，默认读取缓存或使用 win_amd64")
+    p.add_argument("-p", "--python-version", type=str, default=None, help="目标 Python 版本，默认读取缓存或使用 3.10")
+    p.add_argument("-i", "--implementation", type=str, default=None, help="Python 实现 (如 cp、pp)，默认读取缓存或使用 cp")
+    p.add_argument("-b", "--abi", type=str, default=None, help="ABI (如 cp310)，默认读取缓存或使用 cp310")
+    p.add_argument("-s", "--skip-download", action="store_true", help="跳过依赖下载，仅打包现有内容")
+
+    i = sub.add_parser(
+        "init",
+        help="初始化算法包脚手架",
+        description=(
+            "根据算法名称初始化脚手架，生成 manifest.json 与包源码目录。\n"
+            "生成后请按注释修改 PID 列表、步骤 schema 与检测逻辑"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    i.add_argument("name", type=str, help="算法名称（用于 manifest 与入口类名）")
+    i.add_argument("-d", "--dir", type=str, default=None, help="目标目录，默认在当前目录下以算法名生成")
+    i.add_argument("--pids", type=str, default="", help="支持的 PID 列表，逗号分隔，留空则生成占位 PID_TO_FILL")
+    i.add_argument("-v", "--version", type=str, default="1.0.0", help="算法版本，默认 1.0.0")
+    i.add_argument("-e", "--desc", type=str, default=None, help="算法描述，可选")
+
     args = parser.parse_args()
+
     if args.command == "validate":
-        report = validate(args.project, args.manifest, args.zip)
-        print(json.dumps(report, ensure_ascii=False))
+        proj = args.project
+        report = validate(proj, args.manifest, args.zip)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False))
+        else:
+            _print_validate_human(report)
         ok = report["summary"]["status"] == "PASS"
         sys.exit(0 if ok else 1)
+
+    if args.command == "run":
+        if not os.path.isdir(args.project):
+            print(f"错误: 项目目录不存在: {args.project}")
+            print("示例: procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg")
+            sys.exit(2)
+        manifest_path = os.path.join(args.project, "manifest.json")
+        if not os.path.isfile(manifest_path):
+            print(f"错误: 未找到 manifest.json: {manifest_path}")
+            print("请确认项目根目录包含 manifest.json")
+            sys.exit(2)
+        if not os.path.isfile(args.image):
+            print(f"错误: 图片文件不存在: {args.image}")
+            print("示例: --image ./test.jpg")
+            sys.exit(2)
+        if args.params:
+            try:
+                json.loads(args.params)
+            except Exception:
+                print("错误: --params 必须是 JSON 字符串。示例: '{\"threshold\":0.8}'")
+                sys.exit(2)
+        result = run(args.project, args.pid, args.image, args.params)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            _print_run_human(result)
+        status = result.get("execute", {}).get("status")
+        sys.exit(0 if status == "OK" else 1)
+
+    if args.command == "package":
+        res = package(
+            args.project,
+            args.output,
+            args.requirements,
+            args.auto_freeze,
+            args.wheels_platform,
+            args.python_version,
+            args.implementation,
+            args.abi,
+            args.skip_download,
+        )
+        if res.get("status") == "OK":
+            print(f"打包成功: {res.get('zip')}")
+            sys.exit(0)
+        print(f"打包失败: {res.get('message')}")
+        sys.exit(1)
+
+    if args.command == "init":
+        res = init_project(args.name, args.dir, args.pids, args.version, args.desc)
+        if res.get("status") == "OK":
+            print(f"初始化成功: {res.get('path')}")
+            print("下一步: 请修改生成的 main.py 注释指示的内容，并确保 manifest.json 与 get_info 一致")
+            sys.exit(0)
+        print(f"初始化失败: {res.get('message')}")
+        sys.exit(1)
+
     parser.print_help()
