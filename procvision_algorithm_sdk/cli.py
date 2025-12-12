@@ -74,6 +74,10 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
     if cls:
         try:
             alg = cls()
+            try:
+                alg.setup()
+            except Exception:
+                pass
             info = alg.get_info()
             steps_ok = isinstance(info, dict) and isinstance(info.get("steps", []), list)
             _add(checks, "get_info", isinstance(info, dict), "dict returned")
@@ -86,13 +90,17 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
             pid = (mf_pids or ["A01"])[0]
             session = Session("session-demo", {"product_code": pid, "operator": "dev", "trace_id": "trace-demo"})
             image_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev"}
-            pre = alg.pre_execute(0, pid, session, {}, f"dev-shm:{session.id}", image_meta)
+            try:
+                alg.on_step_start(1, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
+            except Exception:
+                pass
+            pre = alg.pre_execute(1, pid, session, {}, f"dev-shm:{session.id}", image_meta)
             _add(checks, "pre_execute_return_dict", isinstance(pre, dict), "dict")
             pre_status = pre.get("status")
             _add(checks, "pre_status_valid", pre_status in {"OK", "ERROR"}, str(pre_status))
             _add(checks, "pre_message_present", bool(pre.get("message")), str(pre.get("message")))
 
-            exe = alg.execute(0, pid, session, {}, f"dev-shm:{session.id}", image_meta)
+            exe = alg.execute(1, pid, session, {}, f"dev-shm:{session.id}", image_meta)
             _add(checks, "execute_return_dict", isinstance(exe, dict), "dict")
             exe_status = exe.get("status")
             _add(checks, "execute_status_valid", exe_status in {"OK", "ERROR"}, str(exe_status))
@@ -106,6 +114,14 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
                     dr = data.get("defect_rects", [])
                     _add(checks, "defect_rects_type", isinstance(dr, list), f"len={len(dr)}")
                     _add(checks, "defect_rects_count_limit", len(dr) <= 20, f"len={len(dr)}")
+            try:
+                alg.on_step_finish(1, session, exe if isinstance(exe, dict) else {})
+            except Exception:
+                pass
+            try:
+                alg.teardown()
+            except Exception:
+                pass
         except Exception as e:
             _add(checks, "smoke_execute", False, str(e))
 
@@ -144,7 +160,7 @@ def _print_validate_human(report: Dict[str, Any]) -> None:
             print(f"{marker} {name}")
 
 
-def run(project: str, pid: str, image_path: str, params_json: Optional[str]) -> Dict[str, Any]:
+def run(project: str, pid: str, image_path: str, params_json: Optional[str], step_index: Optional[int] = None) -> Dict[str, Any]:
     manifest_path = os.path.join(project, "manifest.json")
     mf = _load_manifest(manifest_path)
     cls = _import_entry(mf["entry_point"], project)
@@ -174,8 +190,25 @@ def run(project: str, pid: str, image_path: str, params_json: Optional[str]) -> 
     except Exception:
         user_params = {}
 
-    pre = alg.pre_execute(1, pid, session, user_params, shared_mem_id, image_meta)
-    exe = alg.execute(1, pid, session, user_params, shared_mem_id, image_meta)
+    sidx = int(step_index) if step_index is not None else 1
+    try:
+        alg.setup()
+    except Exception:
+        pass
+    try:
+        alg.on_step_start(sidx, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
+    except Exception:
+        pass
+    pre = alg.pre_execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
+    exe = alg.execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
+    try:
+        alg.on_step_finish(sidx, session, exe if isinstance(exe, dict) else {})
+    except Exception:
+        pass
+    try:
+        alg.teardown()
+    except Exception:
+        pass
     return {"pre_execute": pre, "execute": exe}
 
 
@@ -351,13 +384,9 @@ from procvision_algorithm_sdk import BaseAlgorithm, Session, read_image_from_sha
 class {class_name}(BaseAlgorithm):
     def __init__(self) -> None:
         super().__init__()
-        # TODO: 修改为你的 PID 列表，并确保与 manifest.json 中的 supported_pids 保持一致
         self._supported_pids = {pids}
-        # TODO: 如需加载模型与重资源，请在 setup() 中实现，并设置 self._model_version
 
     def get_info(self) -> Dict[str, Any]:
-        # 必须返回与 manifest.json 一致的 name/version/supported_pids/steps
-        # TODO: 如需增加步骤与参数，请在 steps 中定义 schema（type: int/float/rect/enum/bool/string）
         return {{
             "name": "{name}",
             "version": "{version}",
@@ -383,14 +412,14 @@ class {class_name}(BaseAlgorithm):
         shared_mem_id: str,
         image_meta: Dict[str, Any],
     ) -> Dict[str, Any]:
-        # TODO: 在此实现准备逻辑（如光照检查、模板读取等）
-        # 返回结构：{{"status":"OK|ERROR","message":"提示信息","debug":{{...}}}}
         if pid not in self._supported_pids:
             return {{"status": "ERROR", "message": f"不支持的产品型号: {{pid}}", "error_code": "1001"}}
         img = read_image_from_shared_memory(shared_mem_id, image_meta)
         if img is None:
             return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
-        return {{"status": "OK", "message": "准备就绪", "debug": {{"latency_ms": 0.0}}}}
+        w = int(image_meta.get("width", 640))
+        h = int(image_meta.get("height", 480))
+        return {{"status": "OK", "message": "准备就绪", "debug": {{"width": w, "height": h, "latency_ms": 0.0}}}}
 
     def execute(
         self,
@@ -401,12 +430,15 @@ class {class_name}(BaseAlgorithm):
         shared_mem_id: str,
         image_meta: Dict[str, Any],
     ) -> Dict[str, Any]:
-        # TODO: 在此实现核心检测逻辑，并按规范返回 OK/ERROR；业务判定在 data.result_status（OK/NG）
-        # NG 时需要提供 data.ng_reason 与 data.defect_rects（最多 20 个）
         img = read_image_from_shared_memory(shared_mem_id, image_meta)
         if img is None:
             return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
-        return {{"status": "OK", "data": {{"result_status": "OK", "defect_rects": [], "debug": {{"latency_ms": 0.0}}}}}}
+        th = float(user_params.get("threshold", 0.5))
+        result_status = "OK" if th >= 0.5 else "NG"
+        data = {{"result_status": result_status, "defect_rects": [], "debug": {{"latency_ms": 0.0}}}}
+        if result_status == "NG":
+            data.update({{"ng_reason": "threshold too low"}})
+        return {{"status": "OK", "data": data}}
 """
     with open(os.path.join(pkg_dir, "main.py"), "w", encoding="utf-8") as f:
         f.write(main_py)
@@ -472,6 +504,7 @@ def main() -> None:
     r.add_argument("project", type=str, help="算法项目根目录，包含 manifest.json 与源码")
     r.add_argument("--pid", type=str, required=True, help="产品型号编码（必须在 supported_pids 中）")
     r.add_argument("--image", type=str, required=True, help="本地图片路径（JPEG/PNG），将写入共享内存")
+    r.add_argument("--step", type=int, default=1, help="步骤索引（平台从 1 开始；默认 1）")
     r.add_argument(
         "--params",
         type=str,
@@ -543,7 +576,7 @@ def main() -> None:
             except Exception:
                 print("错误: --params 必须是 JSON 字符串。示例: '{\"threshold\":0.8}'")
                 sys.exit(2)
-        result = run(args.project, args.pid, args.image, args.params)
+        result = run(args.project, args.pid, args.image, args.params, args.step)
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
