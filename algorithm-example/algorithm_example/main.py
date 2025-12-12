@@ -9,6 +9,29 @@ class AlgorithmExample(BaseAlgorithm):
     def __init__(self) -> None:
         super().__init__()
         self._supported_pids = ["p001", "p002"]
+        
+    def setup(self) -> None:
+        self._model_version = "example_v1"
+        self.logger.info("setup", model_version=self._model_version)
+
+    def teardown(self) -> None:
+        self.logger.info("teardown")
+
+    def on_step_start(self, step_index: int, session: Session, context: Dict[str, Any]) -> None:
+        session.set("step_start_ms", int(time.time() * 1000))
+        self.logger.info("on_step_start", step_index=step_index, context=context)
+
+    def on_step_finish(self, step_index: int, session: Session, result: Dict[str, Any]) -> None:
+        start_ms = session.get("step_start_ms", None)
+        if isinstance(start_ms, (int, float)):
+            latency_ms = int(time.time() * 1000) - int(start_ms)
+            self.diagnostics.publish("step_latency_ms", latency_ms)
+            self.logger.info("on_step_finish", step_index=step_index, latency_ms=latency_ms)
+        else:
+            self.logger.info("on_step_finish", step_index=step_index)
+
+    def reset(self, session: Session) -> None:
+        session.delete("step_start_ms")
 
     def get_info(self) -> Dict[str, Any]:
         return {

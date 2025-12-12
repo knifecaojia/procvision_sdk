@@ -78,6 +78,22 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 - 打包 zip：包含源码目录、`manifest.json`、`requirements.txt`、`wheels/` 与可选 `assets/`
 
+## 本地打包与发布（pip 包）
+
+- 安装构建与发布工具：
+  - `pip install -U build twine`
+- 构建 wheel 与源码包（基于 `pyproject.toml`）：
+  - `python -m build`
+  - 产物输出在 `dist/`（如：`procvision_algorithm_sdk-<version>-py3-none-any.whl` 与 `procvision_algorithm_sdk-<version>.tar.gz`）
+- 本地安装验证：
+  - `pip install dist/procvision_algorithm_sdk-<version>-py3-none-any.whl`
+- 发布到内部 PyPI（示例，仅供参考）：
+  - `twine upload --repository-url <your-internal-pypi-url> dist/*`
+  - 建议在环境变量或凭据管理中配置用户与令牌，避免将敏感信息写入命令行
+- 版本号更新：
+  - 编辑 `pyproject.toml` 的 `version` 字段（当前：`pyproject.toml:7`）并重新构建
+  - 建议在 CI 中基于标签或提交自动生成版本并构建
+
 ## GitHub CI/CD
 
 - 工作流文件：`.github/workflows/sdk-build-and-publish.yml`

@@ -156,3 +156,4 @@ build/
 .DS_Store
 wheels/
 *.zip
+algorithm_dev_quickstart.pdf

@@ -208,7 +208,7 @@ class BaseAlgorithm(ABC):
         执行前调用，用于产出参考信息（模板、ROI等）。
 
         参数说明：
-            - step_index: 当前步骤索引（从0开始）
+            - step_index: 当前步骤索引（从1开始）
             - pid: 产品型号编码（平台传递）
             - session: 平台为本次工艺提供的 Session 对象（含 state_store/context）
             - user_params: UI/配置下发的可调参数（按步骤 schema 校验）
@@ -269,7 +269,7 @@ class BaseAlgorithm(ABC):
         执行核心检测/引导逻辑。
 
         参数说明：
-            - step_index: 当前步骤索引（从0开始）
+            - step_index: 当前步骤索引（从1开始）
             - pid: 产品型号编码（平台传递）
             - session: 平台为本次工艺提供的 Session 对象（含 state_store/context）
             - user_params: UI/配置下发的可调参数（按步骤 schema 校验）
@@ -983,7 +983,7 @@ param_types = {
 │ pre_execute │
 └──────┬──────┘
        │
-       ├─► status: OK ──► continue to execute
+      ├─► status: OK ──► continue to execute
        │
       └─► status: ERROR ──► handle error
 
