@@ -18,9 +18,27 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Clean dist
+        run: rm -rf dist
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+      - name: Set version from tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          V=${VERSION#v}
+          python - <<'PY'
+import os, re, pathlib
+p = pathlib.Path('pyproject.toml')
+s = p.read_text(encoding='utf-8')
+ver = os.environ.get('V','').strip()
+if not ver:
+    raise SystemExit('No version from tag')
+s = re.sub(r'(?m)^(version\s*=\s*)"[^"]+"', f'\\1"{ver}"', s)
+p.write_text(s, encoding='utf-8')
+print('Set pyproject version to', ver)
+PY
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
@@ -54,6 +72,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Clean dist
+        run: rm -rf dist
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"

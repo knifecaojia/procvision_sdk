@@ -51,6 +51,7 @@
 ### 3.1 必须实现的三个函数与入参（强制）
 
 - 函数签名（定义参考 `procvision_algorithm_sdk/base.py:32-58`）：
+
 ```
 def get_info(self) -> Dict[str, Any]
 
@@ -76,7 +77,7 @@ def execute(
 ```
 
 - 入参说明：
-  - `step_index`：步骤索引（平台从 1 开始；本地运行命令可能为 0）。
+  - `step_index`：步骤索引（平台与本地运行均从 1 开始；可通过 `--step` 指定，默认 1）。
   - `pid`：产品型号编码；必须在 `self._supported_pids` 内，否则返回 `status="ERROR"`。
   - `session`：会话上下文与 KV 存储（`get/set/delete/exists`），用于跨步骤传递状态。
   - `user_params`：平台按 `get_info().steps[].params` 注入的用户参数；按类型/范围进行校验并使用。
@@ -97,6 +98,7 @@ def execute(
   - 字节写入（Dev Runner）：`dev_write_image_to_shared_memory(shared_mem_id, image_bytes)`（`procvision_algorithm_sdk/shared_memory.py:8-10`）。
   - 数组写入（上位机/测试）：`write_image_array_to_shared_memory(shared_mem_id, image_array)`（`procvision_algorithm_sdk/shared_memory.py:16-17`）。
 - 使用示例：
+
 ```
 from procvision_algorithm_sdk import read_image_from_shared_memory, write_image_array_to_shared_memory
 import numpy as np
@@ -212,12 +214,13 @@ execute(...)
   - `--manifest`：指定 `manifest.json` 路径（可选）
   - `--zip`：离线包路径；检查包内结构（可选）
   - `--json`：以 JSON 输出校验结果（可选）
-- 最简运行：`procvision-cli run ./product_a_screw_check --pid A01 --image ./test.jpg`
+- 最简运行：`procvision-cli run ./product_a_screw_check --pid A01 --image ./test.jpg`（默认执行步骤索引为 1）
 - 参数说明：
-  - 命令格式：`procvision-cli run <project> --pid <pid> --image <path> [--params <json>] [--json]`
+  - 命令格式：`procvision-cli run <project> --pid <pid> --image <path> [--step <index>] [--params <json>] [--json]`
   - `project`：算法项目根目录（必填）
   - `--pid`：产品型号编码；必须在 `supported_pids` 列表内（必填）
   - `--image`：本地图片路径（JPEG/PNG）；用于写入共享内存（必填）
+  - `--step`：步骤索引；默认 1（平台从 1 开始）
   - `--params`：用户参数（JSON 字符串）；本快速入门不使用（可选）
   - `--json`：以 JSON 输出运行结果（可选）
 
