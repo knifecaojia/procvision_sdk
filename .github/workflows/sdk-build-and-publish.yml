@@ -27,18 +27,7 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          V=${VERSION#v}
-          python - <<'PY'
-import os, re, pathlib
-p = pathlib.Path('pyproject.toml')
-s = p.read_text(encoding='utf-8')
-ver = os.environ.get('V','').strip()
-if not ver:
-    raise SystemExit('No version from tag')
-s = re.sub(r'(?m)^(version\s*=\s*)"[^"]+"', f'\\1"{ver}"', s)
-p.write_text(s, encoding='utf-8')
-print('Set pyproject version to', ver)
-PY
+          python -c "import os,re,pathlib; p=pathlib.Path('pyproject.toml'); s=p.read_text(encoding='utf-8'); ver=os.environ.get('VERSION','').strip(); ver=ver[1:] if ver.startswith('v') else ver; assert ver, 'No version from tag'; s=re.sub(r'(?m)^version\\s*=\\s*\"[^\"]+\"', f'version = \"{ver}\"', s); p.write_text(s, encoding='utf-8'); print('Set pyproject version to', ver)"
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
