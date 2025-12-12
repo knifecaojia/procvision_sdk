@@ -160,7 +160,7 @@ def _print_validate_human(report: Dict[str, Any]) -> None:
             print(f"{marker} {name}")
 
 
-def run(project: str, pid: str, image_path: str, params_json: Optional[str]) -> Dict[str, Any]:
+def run(project: str, pid: str, image_path: str, params_json: Optional[str], step_index: Optional[int] = None) -> Dict[str, Any]:
     manifest_path = os.path.join(project, "manifest.json")
     mf = _load_manifest(manifest_path)
     cls = _import_entry(mf["entry_point"], project)
@@ -190,18 +190,19 @@ def run(project: str, pid: str, image_path: str, params_json: Optional[str]) -> 
     except Exception:
         user_params = {}
 
+    sidx = int(step_index) if step_index is not None else 1
     try:
         alg.setup()
     except Exception:
         pass
     try:
-        alg.on_step_start(0, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
+        alg.on_step_start(sidx, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
     except Exception:
         pass
-    pre = alg.pre_execute(0, pid, session, user_params, shared_mem_id, image_meta)
-    exe = alg.execute(0, pid, session, user_params, shared_mem_id, image_meta)
+    pre = alg.pre_execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
+    exe = alg.execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
     try:
-        alg.on_step_finish(0, session, exe if isinstance(exe, dict) else {})
+        alg.on_step_finish(sidx, session, exe if isinstance(exe, dict) else {})
     except Exception:
         pass
     try:
@@ -503,6 +504,7 @@ def main() -> None:
     r.add_argument("project", type=str, help="算法项目根目录，包含 manifest.json 与源码")
     r.add_argument("--pid", type=str, required=True, help="产品型号编码（必须在 supported_pids 中）")
     r.add_argument("--image", type=str, required=True, help="本地图片路径（JPEG/PNG），将写入共享内存")
+    r.add_argument("--step", type=int, default=1, help="步骤索引（平台从 1 开始；默认 1）")
     r.add_argument(
         "--params",
         type=str,
@@ -574,7 +576,7 @@ def main() -> None:
             except Exception:
                 print("错误: --params 必须是 JSON 字符串。示例: '{\"threshold\":0.8}'")
                 sys.exit(2)
-        result = run(args.project, args.pid, args.image, args.params)
+        result = run(args.project, args.pid, args.image, args.params, args.step)
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:

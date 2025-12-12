@@ -50,7 +50,7 @@
   - `setup → on_step_start → pre_execute → execute → on_step_finish → teardown`
   - 校验命令参考调用：`procvision_algorithm_sdk/cli.py:78-124`
   - 运行命令参考调用：`procvision_algorithm_sdk/cli.py:193-210`
-- `step_index` 约定：平台侧从 1 开始；Dev Runner 运行命令使用 0 进行模拟（`procvision_algorithm_sdk/cli.py:198-203`），算法需兼容两者。
+- `step_index` 约定：平台与 Dev Runner 均从 1 开始（本地运行 `--step` 默认为 1，`procvision_algorithm_sdk/cli.py:503-513`）。
 
 ## 钩子函数详解
 
@@ -64,10 +64,10 @@
 - 调用时机（Dev Runner）
 
   - validate：`setup → on_step_start(1) → pre_execute(1) → execute(1) → on_step_finish(1) → teardown`（`procvision_algorithm_sdk/cli.py:78-124`）
-  - run：`setup → on_step_start(0) → pre_execute(0) → execute(0) → on_step_finish(0) → teardown`（`procvision_algorithm_sdk/cli.py:193-210`）
+  - run：`setup → on_step_start(1) → pre_execute(1) → execute(1) → on_step_finish(1) → teardown`（`procvision_algorithm_sdk/cli.py:193-210`）
 - 参数语义
 
-  - `step_index`：当前步骤索引（平台从 1 开始；Dev Runner 可能为 0）。
+  - `step_index`：当前步骤索引（平台与 Dev Runner 从 1 开始；本地运行可通过 `--step` 指定，默认 1）。
   - `session`：会话 KV 存储与只读上下文（`procvision_algorithm_sdk/session.py:19-36`）。
   - `context/result`：平台侧提供的步骤上下文与算法返回的执行结果，用于边界统计与诊断。
 - 返回与异常
@@ -142,7 +142,7 @@ assert img.shape == (240, 320, 3)
   - 输出：人类可读或完整 JSON（`procvision_algorithm_sdk/cli.py:147-161`）
   - 退出码：通过返回 0，否则 1（`procvision_algorithm_sdk/cli.py:548-556`）
 - run
-  - 用法：`procvision-cli run <project> --pid <pid> --image <path> [--params <json>] [--json]`
+  - 用法：`procvision-cli run <project> --pid <pid> --image <path> [--step <index>] [--params <json>] [--json]`
   - 行为：写图片到共享内存、读取图片尺寸失败回退 `640x480`、构造 `Session/image_meta`，执行完整生命周期（`procvision_algorithm_sdk/cli.py:163-212`）
   - 输入校验与错误提示：项目/清单/图片/参数 JSON（`procvision_algorithm_sdk/cli.py:559-577`）
   - 输出：人类可读摘要或 JSON（`procvision_algorithm_sdk/cli.py:214-226, 579-584`）
