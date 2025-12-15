@@ -47,6 +47,7 @@
 ```
 
 - 约束：`supported_pids` 与 `get_info()` 一致。
+- steps 可填可不填，不做强制要求
 
 ### 3.1 必须实现的三个函数与入参（强制）
 
@@ -208,6 +209,7 @@ execute(...)
 ## 5. 校验与运行（CLI）
 
 - 最简校验：`procvision-cli validate ./product_a_screw_check`
+- 校验时需要进入算法文件夹执行
 - 参数说明：
   - 命令格式：`procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--json]`
   - `project`：算法项目根目录（位置参数）；默认 `.`（可选）

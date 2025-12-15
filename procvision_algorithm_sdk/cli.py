@@ -7,6 +7,8 @@ import time
 import zipfile
 import subprocess
 import shutil
+import uuid
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -461,6 +463,135 @@ class {class_name}(BaseAlgorithm):
 
     return {"status": "OK", "path": base}
 
+
+def _write_frame(fp, obj: Dict[str, Any]) -> None:
+    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    ln = len(data).to_bytes(4, byteorder="big")
+    fp.write(ln + data)
+    fp.flush()
+
+
+def _read_exact(fp, n: int) -> Optional[bytes]:
+    b = b""
+    while len(b) < n:
+        chunk = fp.read(n - len(b))
+        if not chunk:
+            return None
+        b += chunk
+    return b
+
+
+def _read_frame(fp) -> Optional[Dict[str, Any]]:
+    h = _read_exact(fp, 4)
+    if h is None:
+        return None
+    ln = int.from_bytes(h, byteorder="big")
+    if ln <= 0:
+        return None
+    body = _read_exact(fp, ln)
+    if body is None:
+        return None
+    try:
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _stderr_printer(pipe) -> None:
+    try:
+        while True:
+            line = pipe.readline()
+            if not line:
+                break
+            try:
+                s = line.decode("utf-8", errors="ignore").rstrip()
+            except Exception:
+                s = str(line)
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+                print(json.dumps(obj, ensure_ascii=False))
+            except Exception:
+                print(s)
+    except Exception:
+        pass
+
+
+def run_adapter(project: str, pid: str, image_path: str, params_json: Optional[str], step_index: Optional[int] = None, entry: Optional[str] = None, tail_logs: bool = False) -> Dict[str, Any]:
+    manifest_path = os.path.join(project, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        return {"pre_execute": {"status": "ERROR", "message": "未找到 manifest.json"}, "execute": {"status": "ERROR", "message": "未找到 manifest.json"}}
+    if not os.path.isfile(image_path):
+        return {"pre_execute": {"status": "ERROR", "message": "图片文件不存在"}, "execute": {"status": "ERROR", "message": "图片文件不存在"}}
+    try:
+        params = json.loads(params_json) if params_json else {}
+    except Exception:
+        params = {}
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        mf = json.load(f)
+    if pid not in (mf.get("supported_pids") or [pid]):
+        pass
+    cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter"]
+    if entry:
+        cmd += ["--entry", entry]
+    env = os.environ.copy()
+    env["PROC_ALGO_ROOT"] = os.path.abspath(project)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=project, env=env)
+    if proc.stdout is None or proc.stdin is None:
+        return {"pre_execute": {"status": "ERROR", "message": "子进程启动失败"}, "execute": {"status": "ERROR", "message": "子进程启动失败"}}
+    log_thread = None
+    if tail_logs and proc.stderr is not None:
+        log_thread = threading.Thread(target=_stderr_printer, args=(proc.stderr,), daemon=True)
+        log_thread.start()
+    hello = _read_frame(proc.stdout)
+    if hello is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return {"pre_execute": {"status": "ERROR", "message": "adapter hello missing"}, "execute": {"status": "ERROR", "message": "adapter hello missing"}}
+    _write_frame(proc.stdin, {"type": "hello", "runner_version": "dev", "heartbeat_interval_ms": 5000, "heartbeat_grace_ms": 2000})
+    try:
+        with open(image_path, "rb") as f:
+            data = f.read()
+    except Exception:
+        data = b""
+    try:
+        import PIL.Image as Image  # type: ignore
+        img = Image.open(image_path)
+        width, height = img.size
+    except Exception:
+        width, height = 640, 480
+    sidx = int(step_index) if step_index is not None else 1
+    session = {"id": f"session-{int(time.time()*1000)}", "context": {"product_code": pid, "trace_id": f"trace-{int(time.time()*1000)}"}}
+    shared_mem_id = f"dev-shm:{session['id']}"
+    image_meta = {"width": int(width), "height": int(height), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev", "color_space": "RGB"}
+    try:
+        dev_write_image_to_shared_memory(shared_mem_id, data)
+    except Exception:
+        pass
+    rid_pre = str(uuid.uuid4())
+    call_pre = {"type": "call", "request_id": rid_pre, "data": {"phase": "pre", "step_index": sidx, "pid": pid, "session": session, "user_params": params, "shared_mem_id": shared_mem_id, "image_meta": image_meta}}
+    _write_frame(proc.stdin, call_pre)
+    pre = _read_frame(proc.stdout) or {"status": "ERROR", "message": "pre 超时"}
+    rid_exe = str(uuid.uuid4())
+    call_exe = {"type": "call", "request_id": rid_exe, "data": {"phase": "execute", "step_index": sidx, "pid": pid, "session": session, "user_params": params, "shared_mem_id": shared_mem_id, "image_meta": image_meta}}
+    _write_frame(proc.stdin, call_exe)
+    exe = _read_frame(proc.stdout) or {"status": "ERROR", "message": "execute 超时"}
+    _write_frame(proc.stdin, {"type": "shutdown"})
+    _read_frame(proc.stdout)
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        if log_thread is not None:
+            log_thread.join(timeout=0.5)
+    except Exception:
+        pass
+    return {"pre_execute": pre or {}, "execute": exe or {}}
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="procvision-cli",
@@ -491,6 +622,10 @@ def main() -> None:
     v.add_argument("--manifest", type=str, default=None, help="指定 manifest.json 路径（可替代 --project）")
     v.add_argument("--zip", type=str, default=None, help="离线交付 zip 包路径（检查 wheels/ 与必需文件）")
     v.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    v.add_argument("--full", action="store_true", help="使用适配器子进程执行完整握手与 pre/execute 校验")
+    v.add_argument("--entry", type=str, default=None, help="显式指定入口 <module:Class>，用于 --full 模式")
+    v.add_argument("--legacy-validate", action="store_true", help="使用旧的本地导入校验路径")
+    v.add_argument("--tail-logs", action="store_true", help="在 --full 模式下实时输出子进程日志")
 
     r = sub.add_parser(
         "run",
@@ -511,6 +646,9 @@ def main() -> None:
         default=None,
         help="JSON 字符串形式的用户参数，例如 '{\"threshold\":0.8}'",
     )
+    r.add_argument("--entry", type=str, default=None, help="显式指定入口 <module:Class>，否则由适配器自动发现")
+    r.add_argument("--legacy-run", action="store_true", help="使用旧的本地直接导入执行路径")
+    r.add_argument("--tail-logs", action="store_true", help="在适配器模式下实时输出子进程日志")
     r.add_argument("--json", action="store_true", help="以 JSON 输出结果")
 
     p = sub.add_parser(
@@ -548,7 +686,10 @@ def main() -> None:
 
     if args.command == "validate":
         proj = args.project
-        report = validate(proj, args.manifest, args.zip)
+        if args.full and not args.legacy_validate and os.path.isdir(proj):
+            report = validate_adapter(proj, args.entry, args.tail_logs)
+        else:
+            report = validate(proj, args.manifest, args.zip)
         if args.json:
             print(json.dumps(report, ensure_ascii=False))
         else:
@@ -576,7 +717,10 @@ def main() -> None:
             except Exception:
                 print("错误: --params 必须是 JSON 字符串。示例: '{\"threshold\":0.8}'")
                 sys.exit(2)
-        result = run(args.project, args.pid, args.image, args.params, args.step)
+        if args.legacy_run:
+            result = run(args.project, args.pid, args.image, args.params, args.step)
+        else:
+            result = run_adapter(args.project, args.pid, args.image, args.params, args.step, args.entry, args.tail_logs)
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
@@ -612,3 +756,73 @@ def main() -> None:
         sys.exit(1)
 
     parser.print_help()
+def validate_adapter(project: str, entry: Optional[str], tail_logs: bool = False) -> Dict[str, Any]:
+    checks: List[Dict[str, Any]] = []
+    manifest_path = os.path.join(project, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": [{"name": "manifest_exists", "result": "FAIL", "message": "manifest.json not found"}]}
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        mf = json.load(f)
+    pid_list = mf.get("supported_pids", [])
+    pid = (pid_list or ["A01"])[0]
+    env = os.environ.copy()
+    env["PROC_ALGO_ROOT"] = os.path.abspath(project)
+    cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter"]
+    if entry:
+        cmd += ["--entry", entry]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=project, env=env)
+    if proc.stdout is None or proc.stdin is None:
+        return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": [{"name": "adapter_start", "result": "FAIL", "message": "start failed"}]}
+    log_thread = None
+    if tail_logs and proc.stderr is not None:
+        log_thread = threading.Thread(target=_stderr_printer, args=(proc.stderr,), daemon=True)
+        log_thread.start()
+    hello = _read_frame(proc.stdout)
+    ok_hello = isinstance(hello, dict) and hello.get("type") == "hello"
+    checks.append({"name": "adapter_hello", "result": "PASS" if ok_hello else "FAIL", "message": "hello" if ok_hello else "missing"})
+    if not ok_hello:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": checks}
+    _write_frame(proc.stdin, {"type": "hello", "runner_version": "dev", "heartbeat_interval_ms": 5000, "heartbeat_grace_ms": 2000})
+    session = {"id": f"session-{int(time.time()*1000)}", "context": {"product_code": pid, "trace_id": f"trace-{int(time.time()*1000)}"}}
+    shared_mem_id = f"dev-shm:{session['id']}"
+    try:
+        dev_write_image_to_shared_memory(shared_mem_id, b"")
+    except Exception:
+        pass
+    image_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time()*1000), "camera_id": "cam-dev", "color_space": "RGB"}
+    rid_pre = str(uuid.uuid4())
+    _write_frame(proc.stdin, {"type": "call", "request_id": rid_pre, "data": {"phase": "pre", "step_index": 1, "pid": pid, "session": session, "user_params": {}, "shared_mem_id": shared_mem_id, "image_meta": image_meta}})
+    pre = _read_frame(proc.stdout)
+    ok_pre = isinstance(pre, dict) and pre.get("type") == "result" and (pre.get("status") in {"OK", "ERROR"})
+    checks.append({"name": "pre_result", "result": "PASS" if ok_pre else "FAIL", "message": "received" if ok_pre else "invalid"})
+    rid_exe = str(uuid.uuid4())
+    _write_frame(proc.stdin, {"type": "call", "request_id": rid_exe, "data": {"phase": "execute", "step_index": 1, "pid": pid, "session": session, "user_params": {}, "shared_mem_id": shared_mem_id, "image_meta": image_meta}})
+    exe = _read_frame(proc.stdout)
+    ok_exe = isinstance(exe, dict) and exe.get("type") == "result" and (exe.get("status") in {"OK", "ERROR"})
+    checks.append({"name": "execute_result", "result": "PASS" if ok_exe else "FAIL", "message": "received" if ok_exe else "invalid"})
+    if ok_exe and exe.get("status") == "OK":
+        data = exe.get("data", {})
+        rs = data.get("result_status")
+        checks.append({"name": "execute_result_status", "result": "PASS" if rs in {"OK", "NG"} else "FAIL", "message": str(rs)})
+        if rs == "NG":
+            dr = data.get("defect_rects", [])
+            checks.append({"name": "defect_rects_limit", "result": "PASS" if isinstance(dr, list) and len(dr) <= 20 else "FAIL", "message": f"len={len(dr) if isinstance(dr, list) else 'n/a'}"})
+    _write_frame(proc.stdin, {"type": "shutdown"})
+    _read_frame(proc.stdout)
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        if log_thread is not None:
+            log_thread.join(timeout=0.5)
+    except Exception:
+        pass
+    passed = sum(1 for c in checks if c["result"] == "PASS")
+    failed = sum(1 for c in checks if c["result"] == "FAIL")
+    status = "PASS" if failed == 0 else "FAIL"
+    return {"summary": {"status": status, "passed": passed, "failed": failed}, "checks": checks}

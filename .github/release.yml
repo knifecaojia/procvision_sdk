@@ -1,0 +1,34 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - octocat
+  categories:
+    - title: 🚀 新功能
+      labels:
+        - enhancement
+    - title: 🐛 Bug 修复
+      labels:
+        - bug
+    - title: 📝 文档更新
+      labels:
+        - documentation
+    - title: ⚠️ 废弃变更
+      labels:
+        - deprecated
+    - title: 🔒 安全更新
+      labels:
+        - security
+    - title: 🧪 测试相关
+      labels:
+        - test
+    - title: 💻 开发者工具
+      labels:
+        - tooling
+    - title: 📦 依赖更新
+      labels:
+        - dependencies
+    - title: 其他变更
+      labels:
+        - "*"
