@@ -12,7 +12,7 @@
   - `Session` 会话上下文与 KV 状态存储（`procvision_algorithm_sdk/session.py:5`）
   - 共享内存读图（`procvision_algorithm_sdk/shared_memory.py:16`）
   - 结构化日志与诊断（`procvision_algorithm_sdk/logger.py:7`，`procvision_algorithm_sdk/diagnostics.py:4`）
-  - CLI 子命令实现（`procvision_algorithm_sdk/cli.py:464`）
+  - CLI 子命令实现（`procvision_algorithm_sdk/cli.py:555`）
 
 ## 开发环境
 
@@ -49,7 +49,8 @@
 - 调用顺序（Dev Runner）：
   - `setup → on_step_start → pre_execute → execute → on_step_finish → teardown`
   - 校验命令参考调用：`procvision_algorithm_sdk/cli.py:78-124`
-  - 运行命令参考调用：`procvision_algorithm_sdk/cli.py:193-210`
+  - 运行命令参考调用（适配器模式）：`procvision_algorithm_sdk/cli.py:499`
+  - 运行命令参考调用（旧路径 legacy）：`procvision_algorithm_sdk/cli.py:164`
 - `step_index` 约定：平台与 Dev Runner 均从 1 开始（本地运行 `--step` 默认为 1，`procvision_algorithm_sdk/cli.py:503-513`）。
 
 ## 钩子函数详解
@@ -136,17 +137,21 @@ assert img.shape == (240, 320, 3)
 ## CLI 参考
 
 - 程序名：`procvision-cli`（`pyproject.toml` 控制台脚本）
-- validate
-  - 用法：`procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--json]`
-  - 校验项：清单存在/载入、必填字段、入口导入与继承、`get_info/steps` 类型、`supported_pids` 一致性、`pre_execute/execute` 返回结构；ZIP 包含 `manifest/requirements/wheels`（`procvision_algorithm_sdk/cli.py:36-145, 128-140`）
+  - validate
+  - 用法：`procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--full] [--entry <module:Class>] [--legacy-validate] [--json]`
+  - 行为：
+    - `--full`（默认推荐）：通过适配器子进程执行完整握手与 `pre/execute`，返回通过/失败报告（`procvision_algorithm_sdk/cli.py:862-903`）
+    - 旧路径：`--legacy-validate` 走本地导入与最小流程校验（`procvision_algorithm_sdk/cli.py:37-145`）
+    - ZIP 校验：始终使用结构校验与 wheels 检查（`procvision_algorithm_sdk/cli.py:129-145`）
   - 输出：人类可读或完整 JSON（`procvision_algorithm_sdk/cli.py:147-161`）
-  - 退出码：通过返回 0，否则 1（`procvision_algorithm_sdk/cli.py:548-556`）
+  - 退出码：通过返回 0，否则 1（`procvision_algorithm_sdk/cli.py:645-651`）
 - run
-  - 用法：`procvision-cli run <project> --pid <pid> --image <path> [--step <index>] [--params <json>] [--json]`
-  - 行为：写图片到共享内存、读取图片尺寸失败回退 `640x480`、构造 `Session/image_meta`，执行完整生命周期（`procvision_algorithm_sdk/cli.py:163-212`）
-  - 输入校验与错误提示：项目/清单/图片/参数 JSON（`procvision_algorithm_sdk/cli.py:559-577`）
+  - 用法：`procvision-cli run <project> --pid <pid> --image <path> [--step <index>] [--params <json>] [--entry <module:Class>] [--json]`
+  - 行为（默认适配器子进程模式）：启动 `procvision_algorithm_sdk.adapter`，握手后写图片到共享内存，发送 `pre/execute` 两个 `call` 帧并读取 `result`，最后 `shutdown`（`procvision_algorithm_sdk/cli.py:499-553`）
+  - 兼容开关：`--legacy-run` 使用旧的本地直接导入执行路径（`procvision_algorithm_sdk/cli.py:652-681`）
+  - 输入校验与错误提示：项目/清单/图片/参数 JSON（`procvision_algorithm_sdk/cli.py:653-671`）
   - 输出：人类可读摘要或 JSON（`procvision_algorithm_sdk/cli.py:214-226, 579-584`）
-  - 退出码：`execute.status == "OK"` 返回 0，否则 1（`procvision_algorithm_sdk/cli.py:583-584`）
+  - 退出码：`execute.status == "OK"` 返回 0，否则 1（`procvision_algorithm_sdk/cli.py:680-681`）
 - package
   - 用法：`procvision-cli package <project> [--output <zip>] [--requirements <path>] [--auto-freeze] [--wheels-platform <p>] [--python-version <v>] [--implementation <impl>] [--abi <abi>] [--skip-download]`
   - 行为：缺少 `requirements.txt` 时可自动生成（`pip freeze`），规范化 `requirements.sanitized.txt`，按平台下载 wheels，打包源码与 wheels（`procvision_algorithm_sdk/cli.py:228-326`）
@@ -344,4 +349,5 @@ class FullDemoAlgorithm(BaseAlgorithm):
   - 替换入口包为以上 `main.py`，更新 `manifest.json` 为上述示例结构
   - 校验：`procvision-cli validate ./full_demo_inspection`
   - 运行：`procvision-cli run ./full_demo_inspection --pid D01 --image ./test.jpg --params "{\"det_threshold\":0.7}" --json`
+  - 说明：默认以适配器子进程通信运行；如需旧路径加 `--legacy-run`
   - 打包：`procvision-cli package ./full_demo_inspection`

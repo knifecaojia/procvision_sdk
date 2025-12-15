@@ -10,7 +10,7 @@
 - 从源码构建后安装：`pip install dist/procvision_algorithm_sdk-<version>-py3-none-any.whl`
 - 或直接安装：`pip install procvision_algorithm_sdk`
 
-## 接口要点（v1.0.0 对齐规范 v0.2.1）
+## 接口要点
 
 - `BaseAlgorithm.__init__()` 不绑定 PID；每次调用通过参数传入 `pid`
 - `pre_execute(step_index, pid, session, user_params, shared_mem_id, image_meta)`
@@ -63,9 +63,21 @@ class MyAlgo(BaseAlgorithm):
 
 - 程序名：`procvision-cli`
 - 校验算法包：
-  - `procvision-cli validate --project ./your_algo_project`
+  - `procvision-cli validate ./your_algo_project --full`（适配器子进程握手+调用）
+  - 显式入口：`procvision-cli validate ./your_algo_project --full --entry your_pkg.main:YourAlgorithm`
+  - 旧路径：`procvision-cli validate ./your_algo_project --legacy-validate`
+  - 输出日志：`procvision-cli validate ./your_algo_project --full --tail-logs`
 - 本地模拟运行：
   - `procvision-cli run ./your_algo_project --pid p001 --image ./test.jpg --json`
+  - 运行机制：以适配器子进程方式，通过帧协议通信与共享内存读写；如需旧的本地直接导入执行，追加 `--legacy-run`
+  - 输出日志：`procvision-cli run ./your_algo_project --pid p001 --image ./test.jpg --tail-logs`
+
+## 适配器启动（Runner 集成）
+
+- 简化命令：
+  - Windows：`<deployed_dir>\venv\Scripts\python.exe -m procvision_algorithm_sdk.adapter`
+  - Linux：`<deployed_dir>/venv/bin/python -m procvision_algorithm_sdk.adapter`
+- 自动发现入口优先级：`--entry` > `PROC_ENTRY_POINT` > `manifest.json`/`manifest.yaml` > `pyproject.toml [tool.procvision.algorithm]` > 默认 `algorithm.main:Algorithm`
 
 ## 离线交付
 
@@ -98,6 +110,7 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 - 工作流文件：`.github/workflows/sdk-build-and-publish.yml`
 - 关键步骤：安装依赖、运行测试、`python -m build` 构建产物、按标签发布到包仓库
+- 运行单元测试：`python -m unittest discover -s tests -p "test_*.py" -v`
 
 ## 目录与文件
 
@@ -109,7 +122,9 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 - 要求 Python `>=3.10`
 - 依赖：`numpy>=1.21`
+- 当前版本：`v0.0.6`（新增适配器模块与 CLI 改动）
 
 ## 参考
 
-- `spec.md` 与 `spec_runner.md` 提供接口契约、通信协议与交付流程
+- `protocol_adapter_spec.md`、`runner_spec.md`、`algorithm_dev_tutorial.md` 提供接口契约、通信协议与开发指南
+- 版本变更：`docs/release-notes/v0.0.6.md`

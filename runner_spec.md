@@ -12,21 +12,22 @@
   - 健壮性：心跳保活、超时与重试、异常分类处理、错误码对齐。
 
 ## 启动与握手
-- 启动：按 `manifest.entry_point` 生成 Python 命令行：`python -m <module>` 或 `python <file>`。
-- 环境：工作目录为算法包根；注入必要的环境变量（如 `PROC_ENV=prod`）。
+- 启动：使用算法包 `venv` 的解释器运行 SDK 适配器：`<deployed_dir>/venv/python -m procvision_algorithm_sdk.adapter [--entry "<module:Class>"]`。
+- 环境：工作目录为算法包根；注入必要的环境变量（如 `PROC_ENV=prod`、`PROC_ALGO_ROOT=<deployed_dir>`）。
 - 握手：
-  - 算法启动后在 `stdout` 输出：`{"type":"hello","sdk_version":"1.0"}`。
-  - Runner 接收后在 2s 内回复：`{"type":"hello","runner_version":"1.0"}`，完成握手。
+  - 适配器启动后在 `stdout` 输出：`{"type":"hello","sdk_version":"<sdk_ver>","capabilities":[...]}`。
+  - Runner 接收后在超时内回复：`{"type":"hello","runner_version":"<runner_ver>","heartbeat_interval_ms":5000,"heartbeat_grace_ms":2000}`。
 
 ## 通信协议
 - 帧格式：`[4字节大端长度][UTF-8 JSON]`。
 - 通道：
-  - `stdout`：算法结果与协议消息（hello/pong/result）。
-  - `stdin`：Runner 指令（hello/ping/call/stop）。
+  - `stdout`：算法结果与协议消息（hello/pong/result/error）。
+  - `stdin`：Runner 指令（hello/ping/call/shutdown）。
   - `stderr`：结构化日志（JSON 行或文本）。
 - 心跳：
   - Runner 每 5s 发送：`{"type":"ping"}`。
   - 算法需在 2s 内回复：`{"type":"pong"}`；超时累计达阈值后执行重启策略。
+  - 责任归属：`ping` 由 Runner 发送，`pong` 由算法回复。
 
 ## 调用模型
 - 指令：`call`
@@ -97,9 +98,11 @@
 - stopped：进程停止（仍已部署）；可恢复到 `running`。
 
 ## 共享内存
-- 写入：平台侧将输入图像编码为 JPEG/PNG，并写入共享内存；生成 `shared_mem_id`。
-- 元信息：注入最小集合 `width/height/timestamp_ms/camera_id`；尺寸需与实际一致。
-- 读入：算法使用 SDK 的 `read_image_from_shared_memory(shared_mem_id, image_meta)` 获取 `numpy.ndarray (H x W x 3)`。
+- 写入：平台侧将输入图像写入共享内存，支持两种模式：
+  - 压缩字节：JPEG/PNG 字节流（零拷贝传输）。
+  - 数组：`numpy.ndarray (H×W×3, uint8)`，颜色空间为 `RGB`；当相机为 `Mono8` 时扩展为 3 通道（每通道相同）。
+- 元信息：注入最小集合 `width/height/timestamp_ms/camera_id`；可选 `color_space`（默认 `RGB`，可取 `BGR`）。
+- 读入：算法使用 SDK 的 `read_image_from_shared_memory(shared_mem_id, image_meta)`；函数同时兼容上述两种模式，并在 `color_space="BGR"` 时自动转换为 `RGB`（参考 `procvision_algorithm_sdk/shared_memory.py:20`）。如需写入数组，可使用 `procvision_algorithm_sdk/shared_memory.py:16`。
 
 ## 会话与状态
 - Runner 负责生成 `Session`（`id/context`），并在一次检测流程内保存 KV（由算法侧调用 `session.get/set/delete/exists`）。
@@ -150,7 +153,8 @@ runner_config.json
   "log_level": "info",
   "save_debug_fields": ["latency_ms","model_version"],
   "shared_memory_backend": "native",
-  "image_encoding": "jpeg",
+  "image_encoding": "jpeg|array",
+  "color_space_default": "RGB",
   "max_defects": 20
 }
 ```
@@ -162,6 +166,7 @@ runner_config.json
 - 超时与重试：在配置范围内工作，错误码处理一致。
 - 日志采集：结构化日志与 `debug` 字段可被聚合并检索。
 - 健壮性：在进程异常与心跳丢失场景下可自动重启并恢复服务。
+- Dev Runner 行为：本地 CLI 的步骤索引默认从 1 开始（`procvision_algorithm_sdk/cli.py:598`）。
 
 ## 参考实现建议
 - 语言：Python/C++/Go 皆可；建议 Python 首版以降低集成成本。
@@ -169,6 +174,9 @@ runner_config.json
 - 测试：
   - 单元测试：帧协议编解码、心跳与超时、错误码映射。
   - 集成测试：与示例算法包端到端跑通两步骤，覆盖 OK/NG/ERROR。
+  - Dev Runner：本地集成验证推荐：
+    - 运行：`procvision-cli run`（适配器子进程模式）
+    - 校验：`procvision-cli validate --full`（适配器子进程完整握手与调用）
 
 ---
 
