@@ -9,7 +9,7 @@ class StructuredLogger:
         self.sink = sink or sys.stderr
 
     def _emit(self, level: str, payload: Dict[str, Any]) -> None:
-        record: Dict[str, Any] = {"level": level, "timestamp": int(time.time() * 1000)}
+        record: Dict[str, Any] = {"level": level, "timestamp_ms": int(time.time() * 1000)}
         record.update(payload)
         self.sink.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.sink.flush()

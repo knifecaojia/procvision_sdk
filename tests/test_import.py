@@ -6,12 +6,10 @@ def test_import():
     class A(BaseAlgorithm):
         def get_info(self):
             return {}
+        def pre_execute(self, step_index, pid, session, user_params, shared_mem_id, image_meta):
+            return {"status": "OK", "message": "准备就绪"}
+        def execute(self, step_index, pid, session, user_params, shared_mem_id, image_meta):
+            return {"status": "OK", "data": {"result_status": "OK"}}
 
-        def pre_execute(self, step_index, session, shared_mem_id, image_meta, user_params):
-            return {"status": "OK"}
-
-        def execute(self, step_index, session, shared_mem_id, image_meta, user_params):
-            return {"status": "OK"}
-
-    a = A("pid")
-    assert a.pid == "pid"
+    a = A()
+    assert isinstance(a, BaseAlgorithm)
