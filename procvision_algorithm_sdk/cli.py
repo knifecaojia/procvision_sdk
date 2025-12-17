@@ -238,6 +238,10 @@ def package(
     implementation: Optional[str],
     abi: Optional[str],
     skip_download: bool,
+    embed_python: bool,
+    python_runtime: Optional[str],
+    runtime_python_version: Optional[str],
+    runtime_abi: Optional[str],
 ) -> Dict[str, Any]:
     manifest_path = os.path.join(project, "manifest.json")
     mf = _load_manifest(manifest_path)
@@ -245,6 +249,15 @@ def package(
     version = mf.get("version", "0.0.0")
     zip_name = output or f"{name}-v{version}-offline.zip"
     req_path = requirements or os.path.join(project, "requirements.txt")
+    # 读取项目环境配置（用于 wheels 与运行时）
+    cfg: Dict[str, Any] = {}
+    cfg_path = os.path.join(project, ".procvision_env.json")
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
     if not os.path.isfile(req_path):
         if auto_freeze:
             try:
@@ -277,14 +290,6 @@ def package(
     wheels_dir = os.path.join(project, "wheels")
     os.makedirs(wheels_dir, exist_ok=True)
     if not skip_download:
-        cfg = {}
-        cfg_path = os.path.join(project, ".procvision_env.json")
-        if os.path.isfile(cfg_path):
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-            except Exception:
-                cfg = {}
         cmd = [
             sys.executable,
             "-m",
@@ -326,6 +331,87 @@ def package(
                 p = os.path.join(root, f)
                 rel = os.path.relpath(p, base)
                 z.write(p, arcname=rel)
+        # 运行时参数默认化与自动发现
+        def _discover_python_runtime_dir(project_dir: str, cfg_obj: Dict[str, Any], explicit: Optional[str]) -> Optional[str]:
+            if explicit and os.path.isdir(explicit):
+                return explicit
+            env_dir = os.environ.get("PROC_PYTHON_RUNTIME")
+            if env_dir and os.path.isdir(env_dir):
+                return env_dir
+            cfg_dir = cfg_obj.get("python_runtime")
+            if cfg_dir and os.path.isdir(cfg_dir):
+                return cfg_dir
+            candidates: List[str] = []
+            # common relative locations
+            for rel in ["python_runtime", "runtime/python", "runtime/python_runtime", "py_runtime", "python"]:
+                p = os.path.join(project_dir, rel)
+                if os.path.isdir(p):
+                    candidates.append(p)
+            # also check in parent directory (workspace-level .venv or runtime)
+            parent_dir = os.path.dirname(project_dir)
+            if parent_dir and os.path.isdir(parent_dir):
+                for rel in [".venv", "python_runtime", "runtime/python"]:
+                    p = os.path.join(parent_dir, rel)
+                    if os.path.isdir(p):
+                        candidates.append(p)
+            # scan project subdirs for python.exe (Windows embeddable)
+            for root, dirs, files in os.walk(project_dir):
+                rel_root = os.path.relpath(root, project_dir)
+                if "python.exe" in files:
+                    # prefer venv root when python.exe is under .venv\Scripts
+                    if os.path.basename(root).lower() == "scripts" and ".venv" in root.replace("/", "\\"):
+                        venv_root = os.path.dirname(root)
+                        candidates.append(venv_root)
+                    else:
+                        candidates.append(root)
+            # scan parent top-level dirs for python.exe (avoid deep recursion for performance)
+            try:
+                for entry in os.listdir(parent_dir):
+                    p = os.path.join(parent_dir, entry)
+                    if not os.path.isdir(p):
+                        continue
+                    # common venv or runtime locations
+                    if os.path.isfile(os.path.join(p, "python.exe")) or os.path.isfile(os.path.join(p, "Scripts", "python.exe")):
+                        # .venv root preferred
+                        if os.path.basename(p).lower() == ".venv":
+                            candidates.append(p)
+                        else:
+                            candidates.append(p)
+            except Exception:
+                pass
+            for c in candidates:
+                if (
+                    os.path.isfile(os.path.join(c, "python.exe"))  # embeddable/runtime root (Windows)
+                    or os.path.isfile(os.path.join(c, "Scripts", "python.exe"))  # venv (Windows)
+                    or os.path.isfile(os.path.join(c, "bin", "python"))  # venv (Linux/Mac)
+                ):
+                    return c
+            return None
+
+        runtime_dir = _discover_python_runtime_dir(base, cfg, python_runtime)
+        runtime_pyver = runtime_python_version or cfg.get("python_version") or python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
+        runtime_pyabi = runtime_abi or cfg.get("abi") or abi or f"cp{sys.version_info.major}{sys.version_info.minor}"
+        bootstrap = {
+            "has_embedded_python": bool(embed_python and runtime_dir),
+            "python_version": runtime_pyver,
+            "abi": runtime_pyabi,
+            "implementation": implementation or "",
+        }
+        z.writestr(os.path.join(os.path.basename(base), "deploy_bootstrap.json"), json.dumps(bootstrap, ensure_ascii=False, indent=2))
+        if embed_python:
+            if not runtime_dir:
+                return {
+                    "status": "ERROR",
+                    "message": "未找到 Python 运行时目录。建议：在当前项目及子目录放置包含 python.exe 的运行时目录，或使用 --python-runtime 指定，或设置环境变量 PROC_PYTHON_RUNTIME，或在 .procvision_env.json 配置 python_runtime",
+                }
+            if not os.path.isdir(runtime_dir):
+                return {"status": "ERROR", "message": f"python_runtime 目录不存在: {runtime_dir}"}
+            for root, dirs, files in os.walk(runtime_dir):
+                rel_root = os.path.relpath(root, runtime_dir)
+                for f in files:
+                    p = os.path.join(root, f)
+                    arc = os.path.join(os.path.basename(base), "python_runtime", rel_root, f) if rel_root != "." else os.path.join(os.path.basename(base), "python_runtime", f)
+                    z.write(p, arcname=arc)
     return {"status": "OK", "zip": zip_path}
 
 
@@ -597,17 +683,18 @@ def main() -> None:
         prog="procvision-cli",
         description=(
             "ProcVision 算法开发 Dev Runner CLI\n"
-            "- 本地验证算法包结构与入口实现\n"
-            "- 使用本地图片模拟共享内存并调用 pre_execute/execute\n"
-            "- 输出 JSON 报告，便于快速自测"
+            "- 验证/运行算法包（默认适配器子进程模式，可跟随日志）\n"
+            "- 使用本地图片写入共享内存并调用 pre/execute\n"
+            "- 构建离线交付包（默认包含 Python 运行时）"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
             "示例:\n"
-            "  验证项目: procvision-cli validate ./algorithm-example\n"
-            "  验证压缩包: procvision-cli validate --zip ./algo.zip\n"
-            "  本地运行: procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg --json\n"
-            "  构建离线包(使用默认参数): procvision-cli package ./algorithm-example\n"
+            "  验证项目(适配器模式+日志): procvision-cli validate ./algorithm-example --full --tail-logs\n"
+            "  验证压缩包(JSON输出): procvision-cli validate --zip ./algo.zip --json\n"
+            "  本地运行(适配器模式+日志): procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg --tail-logs --json\n"
+            "  构建离线包(默认嵌入运行时): procvision-cli package ./algorithm-example --python-runtime <path_to_embeddable> --runtime-python-version 3.10 --runtime-abi cp310\n"
+            "  构建离线包(不嵌入运行时): procvision-cli package ./algorithm-example --no-embed-python\n"
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -615,7 +702,7 @@ def main() -> None:
     v = sub.add_parser(
         "validate",
         help="校验算法包结构与入口实现",
-        description="校验 manifest、入口类、supported_pids 一致性与返回结构",
+        description="校验 manifest/入口类/supported_pids/返回结构；支持 --full 适配器子进程完整校验与 --tail-logs 日志输出",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     v.add_argument("project", nargs="?", default=".", help="算法项目根目录，默认当前目录")
@@ -631,8 +718,8 @@ def main() -> None:
         "run",
         help="本地模拟运行算法",
         description=(
-            "使用本地图片写入共享内存并调用 pre_execute/execute。\n"
-            "注意: pid 必须在 manifest 的 supported_pids 中"
+            "默认适配器子进程模式，使用本地图片写入共享内存并调用 pre/execute；支持 --entry 指定入口与 --tail-logs 跟随日志。\n"
+            "注意: pid 必须在 manifest 的 supported_pids 中。"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -654,7 +741,7 @@ def main() -> None:
     p = sub.add_parser(
         "package",
         help="构建离线交付 zip 包",
-        description="下载 wheels 并打包源码、manifest、requirements 与 assets",
+        description="下载 wheels 并打包源码/manifest/requirements/assets；默认包含 Python 运行时（可用 --no-embed-python 关闭）",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("project", type=str, help="算法项目根目录")
@@ -666,6 +753,11 @@ def main() -> None:
     p.add_argument("-i", "--implementation", type=str, default=None, help="Python 实现 (如 cp、pp)，默认读取缓存或使用 cp")
     p.add_argument("-b", "--abi", type=str, default=None, help="ABI (如 cp310)，默认读取缓存或使用 cp310")
     p.add_argument("-s", "--skip-download", action="store_true", help="跳过依赖下载，仅打包现有内容")
+    p.add_argument("--embed-python", action="store_true", default=True, help="将 Python 运行时一并打包（默认开启）")
+    p.add_argument("--no-embed-python", action="store_false", dest="embed_python", help="不打包 Python 运行时")
+    p.add_argument("--python-runtime", type=str, default=None, help="Python 运行时目录（如 Windows embeddable 包解压目录）")
+    p.add_argument("--runtime-python-version", type=str, default=None, help="运行时 Python 版本（如 3.10）")
+    p.add_argument("--runtime-abi", type=str, default=None, help="运行时 ABI（如 cp310）")
 
     i = sub.add_parser(
         "init",
@@ -739,6 +831,10 @@ def main() -> None:
             args.implementation,
             args.abi,
             args.skip_download,
+            args.embed_python,
+            args.python_runtime,
+            args.runtime_python_version,
+            args.runtime_abi,
         )
         if res.get("status") == "OK":
             print(f"打包成功: {res.get('zip')}")

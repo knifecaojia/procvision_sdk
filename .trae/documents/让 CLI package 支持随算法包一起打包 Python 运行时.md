@@ -1,0 +1,69 @@
+## 背景与取舍
+
+* 控制面：现有协议使用 `stdin/stdout` 帧，简单、可诊断、跨平台；继续保留。
+
+* 数据面：图像在进程间应使用零拷贝或近零拷贝的共享内存；gRPC/HTTP 需序列化与端口管理，增加复杂度与依赖，不适合离线工站（规范禁止对外访问）。
+
+* 临时文件：仅是开发回退方案，易诊断但非最佳；生产应采用原生共享内存。
+
+## 目标
+
+* 在 Windows/Linux 上实现跨进程共享内存后端，兼容现有 `read_image_from_shared_memory` 接口。
+
+* 统一由 Runner 写入、适配器/算法读取；不改变控制帧协议。
+
+## 技术方案
+
+* Python 3.10+ 使用 `multiprocessing.shared_memory` 实现跨进程共享内存。
+
+* 命名约定：`pv_shm_<session_id>[:<camera_id>]`；与 `call.data.shared_mem_id` 一致。
+
+* 数据格式：
+
+  * 字节模式：直接写 JPEG/PNG 字节到共享段；算法侧用 `PIL.Image` 解码。
+
+  * 数组模式：写 `numpy.ndarray` 的原始 `uint8` 字节（形状由 `image_meta` 提供）。
+
+* 变长支持：按帧分配段大小；若尺寸变化则重建段（Runner 负责）。
+
+* 清理：调用完成或会话结束由 Runner 释放共享段。
+
+## 实现步骤
+
+1. 新增后端接口：`SharedMemoryBackend`（`write_bytes(id, bytes)`, `write_array(id, arr)`, `read(id, image_meta)`, `clear(id)`）。
+2. 实现 `NativeSharedMemoryBackend` 基于 `multiprocessing.shared_memory`：
+
+   * 记录 `name → SharedMemory` 句柄映射；写入时创建/重建，读取时附加打开。
+
+   * 读时兼容字节/数组与颜色空间转换（BGR→RGB）。
+3. 在 `procvision_algorithm_sdk/shared_memory.py` 注入后端选择：
+
+   * 默认：`native`；可通过 `PROC_SHM_BACKEND=fs|dev` 切换（保留文件系统与进程内回退）。
+4. 更新 CLI 与适配器仍调用现有 `dev_write_image_to_shared_memory`/`write_image_array_to_shared_memory`/`read_image_from_shared_memory`，其内部走新后端，无需改调用方。
+5. 单元测试：
+
+   * 跨进程读写：主进程写入，共启适配器子进程读取并断言形状与像素。
+
+   * 变更尺寸重建：两次不同大小写入后读取正确。
+
+   * 字节与数组两模式覆盖；BGR→RGB 验证。
+6. 文档更新：
+
+   * `runner_spec.md` 的“共享内存”章节标注默认 `native` 后端与 `PROC_SHM_BACKEND` 切换。
+
+   * `algorithm_dev_tutorial.md` 增加共享内存后端选择与注意事项（清理与尺寸一致性）。
+
+   * README 小节说明本地/生产后端差异与诊断方法。
+
+## 兼容与回滚
+
+* 接口不变，调用方透明；如遇平台兼容问题，可通过环境变量切回 `fs` 回退（当前实现）。
+
+* 保留原临时文件回退以便开发诊断。
+
+## 验收
+
+* 适配器模式在你的示例 `ps_sample/main.py` 场景下能正确读取并显示图像；
+
+* 全部新增测试通过；文档已更新并指明默认 `native`。
+
