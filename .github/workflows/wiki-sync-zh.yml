@@ -5,6 +5,9 @@ on:
     branches: [ "main"]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   sync-wiki-zh:
     runs-on: ubuntu-latest
@@ -21,6 +24,7 @@ jobs:
           # This is the wiki repo: <owner>/<repo>.wiki
           repository: ${{ github.repository }}.wiki
           path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Sync .qoder/repowiki/zh/content into wiki root
@@ -47,8 +51,6 @@ jobs:
           fi
 
       - name: Commit and push changes to wiki
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd wiki
           git config user.name "github-actions[bot]"
