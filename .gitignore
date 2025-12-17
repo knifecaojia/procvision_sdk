@@ -156,6 +156,5 @@ build/
 .DS_Store
 wheels/
 *.zip
-.qoder/
 procvision_sdk.wiki/
 algorithm_dev_quickstart.pdf

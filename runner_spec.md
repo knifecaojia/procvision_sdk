@@ -155,7 +155,9 @@ runner_config.json
   "shared_memory_backend": "native",
   "image_encoding": "jpeg|array",
   "color_space_default": "RGB",
-  "max_defects": 20
+  "max_defects": 20,
+  "allow_local_import": true,
+  "local_store_path": "<runner_root>/algorithms/local"
 }
 ```
 
@@ -177,6 +179,31 @@ runner_config.json
   - Dev Runner：本地集成验证推荐：
     - 运行：`procvision-cli run`（适配器子进程模式）
     - 校验：`procvision-cli validate --full`（适配器子进程完整握手与调用）
+
+## 桌面端本地导入模式（BS 端未就绪场景）
+- 目标：在服务端未部署或不可达时，桌面端 Runner 仍能完成算法包导入、校验、启动与执行，保障现场调试与业务连续性。
+- 能力要求：
+  - 本地导入来源：
+    - 源码目录：包含 `manifest.json` 与入口源码目录，可直接导入并运行
+    - 离线 ZIP：由 `procvision-cli package` 生成的交付包，包含 `manifest/requirements/wheels`
+  - 校验：等价 SDK `validate`，检查清单与入口一致性、`supported_pids`、返回结构；ZIP 检查 wheels/manifest/requirements 完整性
+  - 部署：将本地包解压或复制到 `local_store_path`，创建隔离 `venv/`，仅使用包内 `wheels/` 安装依赖
+  - 预热与运行：完成握手后进入 `running` 态，可接受 `pre/execute` 调用；日志输出与心跳与规范一致
+  - 注册与展示：在本地注册表内记录 `name/version/supported_pids/state`，UI 可列出、启动、停止与卸载
+- 路由与优先级：
+  - 当 BS 端未就绪：仅路由到本地导入包；`active/<pid>.json` 指向本地包的 `name/version`
+  - 当 BS 端恢复：支持切换至服务端部署版本；如发生冲突，优先规则可配置（例如优先服务端版本或保留本地优先）
+- 同步策略（可选）：
+  - 当服务端恢复后，可将本地已验证包上载为 ZIP 或作为源目录同步；需通过安全策略与审计确认
+  - 冲突处理：按 `name/version` 去重；版本不一致时提示并允许选择覆盖或并存
+- UI 建议：
+  - 导入：选择本地目录或 ZIP → 校验 → 安装 → 预热
+  - 管理：列表显示来源（local/server）、状态（installed/running/stopped）、版本、PID 映射
+  - 切换：支持在下一检测周期切换映射；提供安全卸载与日志查看
+- 安全与约束：
+  - 禁止在线拉取依赖；仅使用本地包的 `wheels/`
+  - 不向算法进程下发机密信息；日志采集与心跳管理与服务端模式一致
+  - 资源与隔离：每个包独立 `venv/` 与进程；限制 CPU/内存（可选）
 
 ---
 

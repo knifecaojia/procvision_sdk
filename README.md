@@ -10,7 +10,7 @@
 - 从源码构建后安装：`pip install dist/procvision_algorithm_sdk-<version>-py3-none-any.whl`
 - 或直接安装：`pip install procvision_algorithm_sdk`
 
-## 接口要点
+## 接口要点（v1.0.0 对齐规范 v0.2.1）
 
 - `BaseAlgorithm.__init__()` 不绑定 PID；每次调用通过参数传入 `pid`
 - `pre_execute(step_index, pid, session, user_params, shared_mem_id, image_meta)`
@@ -110,7 +110,7 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 - 工作流文件：`.github/workflows/sdk-build-and-publish.yml`
 - 关键步骤：安装依赖、运行测试、`python -m build` 构建产物、按标签发布到包仓库
-- 运行单元测试：`python -m unittest discover -s tests -p "test_*.py" -v`
+ - 运行单元测试：`python -m unittest discover -s tests -p "test_*.py" -v`
 
 ## 目录与文件
 
@@ -122,7 +122,7 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 
 - 要求 Python `>=3.10`
 - 依赖：`numpy>=1.21`
-- 当前版本：`v0.0.6`（新增适配器模块与 CLI 改动）
+ - 当前版本：`v0.0.6`（新增适配器模块与 CLI 改动）
 
 ## 参考
 
