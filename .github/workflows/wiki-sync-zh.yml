@@ -1,0 +1,63 @@
+name: Sync Chinese Wiki from .qoder
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  workflow_dispatch: {}
+
+jobs:
+  sync-wiki-zh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout wiki repository
+        uses: actions/checkout@v4
+        with:
+          # This is the wiki repo: <owner>/<repo>.wiki
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          fetch-depth: 0
+
+      - name: Sync .qoder/repowiki/zh/content into wiki root
+        run: |
+          set -e
+          SOURCE_DIR=".qoder/repowiki/zh/content"
+
+          if [ ! -d "$SOURCE_DIR" ]; then
+            echo "Source dir '$SOURCE_DIR' not found, skip sync."
+            exit 0
+          fi
+
+          cd wiki
+
+          # Remove everything except .git
+          find . -mindepth 1 -not -name ".git" -exec rm -rf {} +
+
+          # Copy all markdown and folders from source directory into wiki root
+          cp -R "../$SOURCE_DIR"/* .
+
+          # Ensure Home.md exists; if 首页.md exists but Home.md doesn't, copy
+          if [ -f "首页.md" ] && [ ! -f "Home.md" ]; then
+            cp "首页.md" "Home.md"
+          fi
+
+      - name: Commit and push changes to wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git status --porcelain | grep .; then
+            git add .
+            git commit -m "chore: sync zh wiki from .qoder/repowiki/zh/content [skip ci]"
+            git push
+          else
+            echo "No changes to commit"
+          fi

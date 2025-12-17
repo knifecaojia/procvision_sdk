@@ -89,6 +89,22 @@ pip download -r requirements.txt -d wheels/ --platform win_amd64 --python-versio
 ```
 
 - 打包 zip：包含源码目录、`manifest.json`、`requirements.txt`、`wheels/` 与可选 `assets/`
+ 
+## 打包随包的 Python 运行时（可选）
+ 
+- 默认开启：从 v0.0.6 起，`procvision-cli package` 默认打包 Python 运行时。若需禁用，使用 `--no-embed-python`。
+- 适用场景：Runner 端 Python 版本与算法开发版本不一致，导致 wheels 无法加载。
+- 准备运行时（Windows 示例）：从 Python 官网下载对应版本的 Embeddable Package（如 `python-3.10.x-embed-amd64.zip`）并解压到本地目录。
+- 构建包含运行时的离线包（默认开启）：
+  - `procvision-cli package ./algorithm-example --python-runtime <path_to_embeddable_dir> --runtime-python-version 3.10 --runtime-abi cp310`
+- 运行时来源的自动发现：
+  - 环境变量：`PROC_PYTHON_RUNTIME` 指定目录
+  - 项目配置：`.procvision_env.json` 的 `python_runtime` 字段
+- 包内将包含：
+  - `python_runtime/`：运行时目录
+  - `deploy_bootstrap.json`：声明运行时版本与 ABI（Runner 用于部署时选择）
+- Runner 部署建议：
+  - 使用包内运行时创建隔离 venv 并从 `wheels/` 安装依赖，然后使用该 venv 启动适配器
 
 ## 本地打包与发布（pip 包）
 
