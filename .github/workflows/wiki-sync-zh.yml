@@ -27,7 +27,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Sync .qoder/repowiki/zh/content into wiki root
+      - name: Sync .qoder/repowiki/zh/content into wiki root (flattened)
         run: |
           set -e
           SOURCE_DIR=".qoder/repowiki/zh/content"
@@ -40,10 +40,17 @@ jobs:
           cd wiki
 
           # Remove everything except .git
-          find . -mindepth 1 -not -name ".git" -exec rm -rf {} +
+          find . -mindepth 1 -not -path "./.git" -not -path "./.git/*" -delete
 
-          # Copy all markdown and folders from source directory into wiki root
-          cp -R "../$SOURCE_DIR"/* .
+          # Flatten directory structure: copy all .md files with hyphen-separated names
+          cd "../$SOURCE_DIR"
+          find . -type f -name "*.md" | while read -r file; do
+            # Remove leading ./ and replace / with -
+            flat_name=$(echo "$file" | sed 's|^\./||' | sed 's|/|-|g')
+            cp "$file" "../../../wiki/$flat_name"
+          done
+
+          cd ../../../wiki
 
           # Ensure Home.md exists; if 首页.md exists but Home.md doesn't, copy
           if [ -f "首页.md" ] && [ ! -f "Home.md" ]; then
