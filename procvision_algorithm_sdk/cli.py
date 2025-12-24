@@ -883,6 +883,11 @@ def validate_adapter(project: str, entry: Optional[str], tail_logs: bool = False
             pass
         return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": checks}
     _write_frame(proc.stdin, {"type": "hello", "runner_version": "dev", "heartbeat_interval_ms": 5000, "heartbeat_grace_ms": 2000})
+    rid_info = str(uuid.uuid4())
+    _write_frame(proc.stdin, {"type": "call", "request_id": rid_info, "data": {"phase": "info"}})
+    info_res = _read_frame(proc.stdout)
+    ok_info = isinstance(info_res, dict) and info_res.get("type") == "result" and info_res.get("data", {}).get("phase") == "info"
+    checks.append({"name": "get_info_result", "result": "PASS" if ok_info else "FAIL", "message": "received" if ok_info else "invalid"})
     session = {"id": f"session-{int(time.time()*1000)}", "context": {"product_code": pid, "trace_id": f"trace-{int(time.time()*1000)}"}}
     shared_mem_id = f"dev-shm:{session['id']}"
     try:
