@@ -16,6 +16,13 @@
 - [tests/test_session.py](file://tests/test_session.py)
 </cite>
 
+## 更新摘要
+**变更内容**
+- 新增“桌面端本地导入模式”章节，详细说明从源码目录或离线ZIP导入、依赖安装、本地注册与管理、路由优先级及安全约束。
+- 在“简介”与“附录”中补充桌面端本地导入模式的定位与能力说明。
+- 更新“项目结构”与“依赖关系分析”以反映新增功能的实现路径。
+- 新增“本地导入与包管理”流程图，展示桌面端导入与服务端部署的协同机制。
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
@@ -33,14 +40,16 @@
 
 对比定位：
 - Dev Runner（SDK内置）：侧重开发体验、协议验证与单次调试；
-- Production Runner（平台侧）：强调高并发、高稳定性、容错恢复与资源隔离，与包管理/上报集成。
+- Production Runner（平台侧）：强调高并发、高稳定性、容错恢复与资源隔离，与包管理/上报集成；
+- **桌面端本地导入模式**：在服务端未部署或不可达时，支持从源码目录或离线ZIP导入算法包，使用包内wheels安装依赖，完成本地注册与管理，保障现场调试与业务连续性。
 
 **章节来源**
 - [spec_runner.md](file://spec_runner.md#L1-L33)
+- [runner_spec.md](file://runner_spec.md#L184-L217)
 
 ## 项目结构
 本仓库围绕算法SDK与Runner规范展开，核心文件与职责如下：
-- Runner规范文档：runner_spec.md、spec_runner.md，定义Runner职责、模块划分、关键流程与性能/安全/遥测要求。
+- Runner规范文档：runner_spec.md、spec_runner.md，定义Runner职责、模块划分、关键流程与性能/安全/遥测要求，新增桌面端本地导入与包管理能力。
 - SDK基础能力：base.py（算法抽象基类）、session.py（会话KV）、shared_memory.py（共享内存读写）、logger.py（结构化日志）、diagnostics.py（诊断数据）。
 - CLI工具：procvision_algorithm_sdk/cli.py，提供包校验、本地运行、离线包打包与脚手架初始化，体现Dev Runner行为与协议对齐。
 - 单元测试：tests/test_shared_memory.py、tests/test_session.py，验证共享内存读写与会话KV行为。
@@ -286,7 +295,8 @@ HealthMonitor --> ProtocolHandler : "监控"
 ## 依赖关系分析
 - Runner规范与SDK协议对齐：Runner规范与SDK规范在hello/pong/ping/call/result、image_meta、共享内存模式等方面保持一致；
 - SDK模块依赖：BaseAlgorithm、Session、SharedMemory、StructuredLogger、Diagnostics为Runner提供算法侧能力与日志/状态支持；
-- CLI工具：Dev Runner通过procvision-cli验证包结构、入口与协议一致性，体现Runner协议与SDK对齐。
+- CLI工具：Dev Runner通过procvision-cli验证包结构、入口与协议一致性，体现Runner协议与SDK对齐；
+- **本地导入模式**：依赖runner_spec.md中定义的本地导入、部署与路由机制，通过`local_store_path`与`active/<pid>.json`实现本地包管理。
 
 ```mermaid
 graph LR
@@ -300,6 +310,7 @@ SR --> DIA["diagnostics.py"]
 CLI["cli.py"] --> BASE
 CLI --> SESS
 CLI --> SHM
+SPEC --> CLI : "本地导入流程"
 ```
 
 **图表来源**
@@ -352,7 +363,7 @@ CLI --> SHM
 - [tests/test_session.py](file://tests/test_session.py#L1-L24)
 
 ## 结论
-生产级Runner以模块化架构为核心，围绕进程管理、协议处理、共享内存、任务调度与健康监控五大模块协同工作，严格遵循SDK协议与Runner规范，满足高并发、高稳定性的生产落地需求。通过心跳保活、超时与重试、熔断策略与资源配额，Runner在异常情况下能够快速恢复并保障系统可用性；通过结构化日志与遥测上报，实现可观测与可追溯。
+生产级Runner以模块化架构为核心，围绕进程管理、协议处理、共享内存、任务调度与健康监控五大模块协同工作，严格遵循SDK协议与Runner规范，满足高并发、高稳定性的生产落地需求。通过心跳保活、超时与重试、熔断策略与资源配额，Runner在异常情况下能够快速恢复并保障系统可用性；通过结构化日志与遥测上报，实现可观测与可追溯。新增的桌面端本地导入模式，确保在服务端不可达时仍能完成算法包的导入、校验、启动与执行，保障现场调试与业务连续性。
 
 ## 附录
 
@@ -360,15 +371,19 @@ CLI --> SHM
 - 启动流程：manifest解析→环境配置→进程启动→握手→心跳
 - 执行流程：图像采集→共享内存申请→写入→构造call→发送→超时控制→等待result→释放
 - 异常恢复：超时→优雅关闭→强制终止→重启→熔断
+- **本地导入流程**：选择源码目录或ZIP→校验→解压到local_store_path→创建venv→仅用wheels安装依赖→注册到本地注册表→预热并进入running态
 
 **章节来源**
 - [spec_runner.md](file://spec_runner.md#L34-L80)
 - [runner_spec.md](file://runner_spec.md#L1-L120)
+- [runner_spec.md](file://runner_spec.md#L184-L217)
 
 ### 与Dev Runner的区别
 - Dev Runner（SDK内置）：强调开发体验与协议验证，适合单次调试；
-- Production Runner（平台侧）：强调高并发、高稳定、容错恢复与资源隔离，集成包管理与遥测上报。
+- Production Runner（平台侧）：强调高并发、高稳定、容错恢复与资源隔离，集成包管理与遥测上报；
+- **桌面端本地导入模式**：在服务端未就绪时，支持从源码或离线包导入，使用本地wheels安装，实现本地注册与管理，优先路由至本地包，保障业务连续性。
 
 **章节来源**
 - [spec_runner.md](file://spec_runner.md#L1-L33)
 - [README.md](file://README.md#L1-L116)
+- [runner_spec.md](file://runner_spec.md#L184-L217)

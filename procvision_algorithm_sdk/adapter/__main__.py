@@ -126,7 +126,7 @@ def _import_entry(ep: str) -> BaseAlgorithm:
 
 
 def _send_hello() -> None:
-    _write_frame({"type": "hello", "sdk_version": _get_sdk_version(), "timestamp_ms": _now_ms(), "capabilities": ["ping", "call", "shutdown", "shared_memory:v1"]})
+    _write_frame({"type": "hello", "sdk_version": _get_sdk_version(), "timestamp_ms": _now_ms(), "capabilities": ["ping", "call", "shutdown", "shared_memory:v1", "info"]})
 
 
 def _send_pong(req: Dict[str, Any]) -> None:
@@ -210,7 +210,13 @@ def main() -> None:
                         alg.on_step_start(step_index, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
                     except Exception:
                         pass
-                    if phase == "pre":
+                    if phase == "info":
+                        info = alg.get_info()
+                        if isinstance(info, dict):
+                            _write_frame(_result_from("OK", "", rid, "info", 0, {"info": info}))
+                        else:
+                            _send_error("invalid get_info return", "1000", rid)
+                    elif phase == "pre":
                         res = alg.pre_execute(step_index, pid, session, user_params, shared_mem_id, image_meta)
                         if isinstance(res, dict):
                             st = res.get("status") or "OK"
