@@ -126,7 +126,23 @@ def _import_entry(ep: str) -> BaseAlgorithm:
 
 
 def _send_hello() -> None:
-    _write_frame({"type": "hello", "sdk_version": _get_sdk_version(), "timestamp_ms": _now_ms(), "capabilities": ["ping", "call", "shutdown", "shared_memory:v1", "info"]})
+    _write_frame({
+        "type": "hello",
+        "sdk_version": _get_sdk_version(),
+        "timestamp_ms": _now_ms(),
+        "capabilities": [
+            "ping",
+            "call",
+            "shutdown",
+            "shared_memory:v1",
+            "info",
+            "setup",
+            "teardown",
+            "reset",
+            "on_step_start",
+            "on_step_finish"
+        ]
+    })
 
 
 def _send_pong(req: Dict[str, Any]) -> None:
@@ -211,11 +227,45 @@ def main() -> None:
                     except Exception:
                         pass
                     if phase == "info":
-                        info = alg.get_info()
-                        if isinstance(info, dict):
-                            _write_frame(_result_from("OK", "", rid, "info", 0, {"info": info}))
+                        if not hasattr(alg, "get_info"):
+                            _send_error("algorithm does not implement get_info", "1000", rid)
                         else:
-                            _send_error("invalid get_info return", "1000", rid)
+                            info = alg.get_info()
+                            if isinstance(info, dict):
+                                _write_frame(_result_from("OK", "", rid, "info", 0, {"info": info}))
+                            else:
+                                _send_error("invalid get_info return", "1000", rid)
+                    elif phase == "setup":
+                        if not hasattr(alg, "setup"):
+                            _send_error("algorithm does not implement setup", "1000", rid)
+                        else:
+                            alg.setup()
+                            _write_frame(_result_from("OK", "", rid, "setup", step_index))
+                    elif phase == "teardown":
+                        if not hasattr(alg, "teardown"):
+                            _send_error("algorithm does not implement teardown", "1000", rid)
+                        else:
+                            alg.teardown()
+                            _write_frame(_result_from("OK", "", rid, "teardown", step_index))
+                    elif phase == "reset":
+                        if not hasattr(alg, "reset"):
+                            _send_error("algorithm does not implement reset", "1000", rid)
+                        else:
+                            alg.reset(session)
+                            _write_frame(_result_from("OK", "", rid, "reset", step_index))
+                    elif phase == "on_step_start":
+                        if not hasattr(alg, "on_step_start"):
+                            _send_error("algorithm does not implement on_step_start", "1000", rid)
+                        else:
+                            ctx = {"pid": pid, "trace_id": session.context.get("trace_id")}
+                            alg.on_step_start(step_index, session, ctx)
+                            _write_frame(_result_from("OK", "", rid, "on_step_start", step_index))
+                    elif phase == "on_step_finish":
+                        if not hasattr(alg, "on_step_finish"):
+                            _send_error("algorithm does not implement on_step_finish", "1000", rid)
+                        else:
+                            alg.on_step_finish(step_index, session, user_params)
+                            _write_frame(_result_from("OK", "", rid, "on_step_finish", step_index))
                     elif phase == "pre":
                         res = alg.pre_execute(step_index, pid, session, user_params, shared_mem_id, image_meta)
                         if isinstance(res, dict):
