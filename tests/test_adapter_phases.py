@@ -31,57 +31,42 @@ def _read_frame(fp):
         return None
     return json.loads(body.decode("utf-8"))
 
-class TestAdapterPhases(unittest.TestCase):
-    def test_phases_full_algo(self):
+class TestAdapterExecute(unittest.TestCase):
+    def test_execute_ok(self):
         env = os.environ.copy()
         env["PYTHONPATH"] = os.getcwd()
-        cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter", "--entry", "tests.mock_phases_algo:FullAlgo"]
+        cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter", "--entry", "tests.mock_phases_algo:ExecuteAlgo"]
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         
         try:
-            # 1. Hello
             hello = _read_frame(p.stdout)
             self.assertIsNotNone(hello)
             self.assertEqual(hello["type"], "hello")
             caps = hello.get("capabilities", [])
-            self.assertIn("setup", caps)
-            self.assertIn("reset", caps)
-            self.assertIn("on_step_start", caps)
-            self.assertIn("on_step_finish", caps)
-            
-            # 2. Setup
-            _write_frame(p.stdin, {"type": "call", "request_id": "r1", "phase": "setup"})
+            self.assertIn("execute", caps)
+
+            _write_frame(
+                p.stdin,
+                {
+                    "type": "call",
+                    "request_id": "r1",
+                    "data": {
+                        "step_index": 1,
+                        "step_desc": "step-1",
+                        "guide_info": [],
+                        "cur_image_shm_id": "dev-shm:s1:cur",
+                        "cur_image_meta": {"width": 1, "height": 1, "timestamp_ms": 0, "camera_id": "c"},
+                        "guide_image_shm_id": "dev-shm:s1:guide",
+                        "guide_image_meta": {"width": 1, "height": 1, "timestamp_ms": 0, "camera_id": "c"},
+                    },
+                },
+            )
             res = _read_frame(p.stdout)
             self.assertEqual(res["type"], "result")
             self.assertEqual(res["request_id"], "r1")
             self.assertEqual(res["status"], "OK")
-            self.assertEqual(res["data"]["phase"], "setup")
+            self.assertEqual(res["data"]["result_status"], "OK")
 
-            # 3. Reset
-            _write_frame(p.stdin, {"type": "call", "request_id": "r2", "phase": "reset", "session": {"id": "s1"}})
-            res = _read_frame(p.stdout)
-            self.assertEqual(res["status"], "OK")
-            self.assertEqual(res["data"]["phase"], "reset")
-
-            # 4. on_step_start
-            _write_frame(p.stdin, {"type": "call", "request_id": "r3", "phase": "on_step_start", "step_index": 1, "session": {"id": "s1"}})
-            res = _read_frame(p.stdout)
-            self.assertEqual(res["status"], "OK")
-            self.assertEqual(res["data"]["phase"], "on_step_start")
-
-            # 5. on_step_finish
-            _write_frame(p.stdin, {"type": "call", "request_id": "r4", "phase": "on_step_finish", "step_index": 1, "session": {"id": "s1"}})
-            res = _read_frame(p.stdout)
-            self.assertEqual(res["status"], "OK")
-            self.assertEqual(res["data"]["phase"], "on_step_finish")
-
-            # 6. Teardown
-            _write_frame(p.stdin, {"type": "call", "request_id": "r5", "phase": "teardown"})
-            res = _read_frame(p.stdout)
-            self.assertEqual(res["status"], "OK")
-            self.assertEqual(res["data"]["phase"], "teardown")
-
-            # Shutdown
             _write_frame(p.stdin, {"type": "shutdown"})
             ack = _read_frame(p.stdout)
             self.assertEqual(ack["type"], "shutdown")
@@ -89,37 +74,62 @@ class TestAdapterPhases(unittest.TestCase):
         finally:
             p.terminate()
             p.wait()
+            try:
+                if p.stdin:
+                    p.stdin.close()
+                if p.stdout:
+                    p.stdout.close()
+                if p.stderr:
+                    p.stderr.close()
+            except Exception:
+                pass
 
-    def test_phases_missing_algo(self):
+    def test_execute_missing(self):
         env = os.environ.copy()
         env["PYTHONPATH"] = os.getcwd()
-        cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter", "--entry", "tests.mock_phases_algo:MissingAlgo"]
+        cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter", "--entry", "tests.mock_phases_algo:MissingExecuteAlgo"]
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         
         try:
-            # 1. Hello
             hello = _read_frame(p.stdout)
             self.assertIsNotNone(hello)
-            
-            # 2. Setup (MissingAlgo doesn't implement setup in the mock file? Wait, I wrote "pass". It HAS setup but it does nothing? No, I defined class MissingAlgo: pass. So it doesn't have setup method.)
-            # Wait, I wrote: class MissingAlgo: pass.
-            # But earlier I thought I wrote pass in setup.
-            # Let's check mock_phases_algo content in previous tool output.
-            
-            # 3. Reset
-            _write_frame(p.stdin, {"type": "call", "request_id": "r1", "phase": "reset", "session": {"id": "s1"}})
+
+            _write_frame(
+                p.stdin,
+                {
+                    "type": "call",
+                    "request_id": "r1",
+                    "data": {
+                        "step_index": 1,
+                        "step_desc": "step-1",
+                        "guide_info": [],
+                        "cur_image_shm_id": "dev-shm:s1:cur",
+                        "cur_image_meta": {"width": 1, "height": 1, "timestamp_ms": 0, "camera_id": "c"},
+                        "guide_image_shm_id": "dev-shm:s1:guide",
+                        "guide_image_meta": {"width": 1, "height": 1, "timestamp_ms": 0, "camera_id": "c"},
+                    },
+                },
+            )
             res = _read_frame(p.stdout)
             self.assertEqual(res["type"], "error")
             self.assertEqual(res["request_id"], "r1")
-            self.assertIn("does not implement reset", res["message"])
+            self.assertTrue(bool(res.get("message")))
 
-            # Shutdown
             _write_frame(p.stdin, {"type": "shutdown"})
             _read_frame(p.stdout)
 
         finally:
             p.terminate()
             p.wait()
+            try:
+                if p.stdin:
+                    p.stdin.close()
+                if p.stdout:
+                    p.stdout.close()
+                if p.stderr:
+                    p.stderr.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     unittest.main()

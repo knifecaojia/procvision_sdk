@@ -1,268 +1,259 @@
-# ProcVision 算法快速入门
+# ProcVision 算法快速入门（Execute-only）
 
-目标：用最少步骤完成一个可交付的算法项目，并输出离线包。
+## SDK版本从V0.0.7 跃迁到 V0.3.0
 
-## 设计说明（工艺驱动的算法开发）
+重要变更提示：
 
-- 先由工艺人员基于 MOM 系统或外部资料，按 PID 导出工艺过程信息（产品图片 + JSON 步骤标注）。
-- JSON 标注包含：步骤编号、标识框（rect）、工艺说明、注意事项等；作为算法开发的“业务真相来源”。
-- 算法包以该工艺信息为输入，完成 `get_info().steps` 的 schema 定义与 `pre_execute/execute` 的实现与校验。
+删除全部算法运行周期支持
 
-## 1. 环境准备
+删除算法Session上下文管理与全部钩子函数
 
-- 创建并激活虚拟环境：
-  - Linux：`python -m venv .venv`，`source .venv/bin/activate`
-- 安装 SDK：`pip install procvision_algorithm_sdk`
+仅保留一个算法入口 execute
 
-## 2. 项目初始化（CLI）
+极大的精简了开发需遵守的运行规范
 
-- 最简命令：`procvision-cli init product_a_screw_check`
-- 示例（指定目录与PID）：`procvision-cli init product_a_screw_check -d ./product_a_screw_check --pids A01,A02 -v 1.2.1`
-- 命令与参数说明：
-  - 命令格式：`procvision-cli init <name> [-d|--dir <dir>] [--pids <p1,p2>] [-v|--version <ver>] [-e|--desc <text>]`
-  - `name`：算法名称；生成模块目录与入口类名（必填）
-  - `-d|--dir`：目标目录；默认在当前目录下创建（可选）
-  - `--pids`：支持的产品型号列表；逗号分隔，留空则生成占位 `PID_TO_FILL`（可选）
-  - `-v|--version`：算法版本；默认 `1.0.0`（可选）
-  - `-e|--desc`：算法描述；写入 `manifest.json`（可选）
-- 目录结构：
-  - `product_a_screw_check/manifest.json`
-  - `product_a_screw_check/product_a_screw_check/__init__.py`
-  - `product_a_screw_check/product_a_screw_check/main.py`
+## 重要提示：stdio 协议安全（必须遵守）
 
-## 3. 编辑 manifest.json
+在 `procvision-cli run`、`procvision-cli validate --full` 以及上位机/客户端算法运行引擎中，算法进程与 Runner/CLI 通过 **stdio 帧协议** 交互控制指令：
 
-- 必填：`name`、`version`、`entry_point`、`supported_pids`
-- 推荐：`description`
-- 示例：
+- `stdout`：专用于协议帧输出（hello/result/error/pong/shutdown）
+- `stdin`：专用于接收 Runner/CLI 指令（hello/ping/call/shutdown）
+- `stderr`：专用于日志（允许输出文本或结构化 JSON 行）
 
+因此算法开发过程中必须严格遵守：
+
+- 禁止向 `stdout` 输出任何内容：不要 `print()`，不要写 `sys.stdout`，不要让第三方库把日志/进度条/告警打印到 stdout
+- 允许向 `stderr` 输出日志：推荐使用 `StructuredLogger`（SDK 内置）或将第三方日志改为输出到 stderr
+- 禁止读取 `stdin`：stdio 输入由协议使用，读取会导致协议阻塞或解析失败
+
+常见踩坑清单（建议逐条自检）：
+
+- 使用 `print()`/`pprint()`/`rich.print()`/`tqdm` 默认输出到 stdout
+- 依赖库在 import 时打印 banner/版本信息到 stdout
+- 运行时告警（例如 warnings）被重定向到 stdout
+- 多线程/子进程把日志写到 stdout（尤其是外部推理引擎包装层）
+
+一旦 stdout 被污染，Runner/CLI 会出现：握手失败、结果解析失败、随机卡死、误报超时等问题。
+
+开发期建议强制自检：
+
+- 使用 `procvision-cli validate --full`：该模式会严格检测 stdout 污染，发现即判失败并提示修复。
+
+## 1. 项目初始化
+
+```bash
+procvision-cli init demo_algo -d ./demo_algo -v 1.0.0 -e "demo"
 ```
+
+生成：
+
+- `manifest.json`
+- `<module>/main.py`（入口类，仅需实现 execute）
+
+### init 参数说明
+
+用法：
+
+```bash
+procvision-cli init <name> [-d <dir>] [-v <version>] [-e <desc>]
+```
+
+- `name`：算法名称（用于 `manifest.json.name`，以及生成模块目录/类名）
+- `-d/--dir`：目标目录（默认在当前目录以算法名创建）
+- `-v/--version`：算法版本（默认 `1.0.0`，写入 `manifest.json.version`）
+- `-e/--desc`：算法描述（可选，写入 `manifest.json.description`）
+
+## 2. manifest.json（最小）
+
+```json
 {
-  "name": "product_a_screw_check",
-  "version": "1.2.1",
-  "entry_point": "product_a_screw_check.main:ProductAScrewCheckAlgorithm",
-  "description": "A产品螺丝检测",
-  "supported_pids": ["A01", "A02"]
+  "name": "demo_algo",
+  "version": "1.0.0",
+  "entry_point": "demo_algo.main:DemoAlgoAlgorithm",
+  "description": "demo"
 }
 ```
 
-- 约束：`supported_pids` 与 `get_info()` 一致。
-- steps 可填可不填，不做强制要求
+## 3. 实现 execute
 
-### 3.1 必须实现的三个函数与入参（强制）
+`main.py` 只需要实现一个函数：
 
-- 函数签名（定义参考 `procvision_algorithm_sdk/base.py:32-58`）：
+```python
+from typing import Any, Dict
+from procvision_algorithm_sdk import BaseAlgorithm
 
-```
-def get_info(self) -> Dict[str, Any]
+class DemoAlgoAlgorithm(BaseAlgorithm):
+    def execute(
+        self,
+        step_index: int,
+        step_desc: str,
+        cur_image: Any,
+        guide_image: Any,
+        guide_info: Any,
+    ) -> Dict[str, Any]:
+        if cur_image is None or guide_image is None:
+            return {"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}
+	cur = normalize_image(cur_image, "cur_image")
+        guide = normalize_image(guide_image, "guide_image")
+#####################################算法业务逻辑#####################################
 
-def pre_execute(
-    self,
-    step_index: int,
-    pid: str,
-    session: Session,
-    user_params: Dict[str, Any],
-    shared_mem_id: str,
-    image_meta: Dict[str, Any],
-) -> Dict[str, Any]
 
-def execute(
-    self,
-    step_index: int,
-    pid: str,
-    session: Session,
-    user_params: Dict[str, Any],
-    shared_mem_id: str,
-    image_meta: Dict[str, Any],
-) -> Dict[str, Any]
+        return {"status": "OK", "data": {"result_status": "OK", "defect_rects": []}}
 ```
 
-- 入参说明：
-  - `step_index`：步骤索引（平台与本地运行均从 1 开始；可通过 `--step` 指定，默认 1）。
-  - `pid`：产品型号编码；必须在 `self._supported_pids` 内，否则返回 `status="ERROR"`。
-  - `session`：会话上下文与 KV 存储（`get/set/delete/exists`），用于跨步骤传递状态。
-  - `user_params`：平台按 `get_info().steps[].params` 注入的用户参数；按类型/范围进行校验并使用。
-  - `shared_mem_id`：共享内存标识；平台传入。开发本地运行时为 `dev-shm:<session.id>`（`procvision_algorithm_sdk/cli.py:172`）。
-  - `image_meta`：图像最小必要元信息，至少包含 `width/height/timestamp_ms/camera_id`；宽高须为正整数。可选 `color_space ∈ {RGB,BGR}`，便于与上位机同步颜色空间（当为 `BGR` 时 SDK 自动转换为 `RGB`）。
+### 如何判断与统一图像格式（开发建议）
 
-### 3.2 通过共享内存获取图片（必须掌握）
+`cur_image/guide_image` 通常为 `numpy.ndarray`，`dtype=uint8`，形状 `H×W×3`（RGB）。但建议兼容灰度/单通道/RGBA，并在 `execute` 开头归一化：
 
-- 读取 API：`read_image_from_shared_memory(shared_mem_id, image_meta)`（`procvision_algorithm_sdk/shared_memory.py:20-52`）
-- 支持数据源：
-  - 字节（JPEG/PNG）；自动解码为 `numpy.ndarray (H×W×3, uint8)`。
-  - 数组（`numpy.ndarray`）；支持 `(H,W,3)` 与灰度 `(H,W)`/`(H,W,1)` 自动扩展为 3 通道。
-- 颜色空间：可选 `image_meta.color_space ∈ {RGB, BGR}`；当为 `BGR` 时自动转换为 `RGB`。
-- 行为与回退：
-  - 当 `image_meta.width/height <= 0` 时返回 `None`。
-  - 当共享内存无数据或解码失败时，返回形状为 `(height, width, 3)` 的零矩阵（`uint8`）。
-- 本地开发写入共享内存：
-  - 字节写入（Dev Runner）：`dev_write_image_to_shared_memory(shared_mem_id, image_bytes)`（`procvision_algorithm_sdk/shared_memory.py:8-10`）。
-  - 数组写入（上位机/测试）：`write_image_array_to_shared_memory(shared_mem_id, image_array)`（`procvision_algorithm_sdk/shared_memory.py:16-17`）。
-- 使用示例：
-
-```
-from procvision_algorithm_sdk import read_image_from_shared_memory, write_image_array_to_shared_memory
+```python
+from typing import Any
 import numpy as np
 
-# 示例：写入 RGB 数组并读取
-shm_id = "dev-shm:demo"
-arr = np.zeros((240, 320, 3), dtype=np.uint8)
-arr[0, 0] = np.array([10, 20, 30], dtype=np.uint8)
-write_image_array_to_shared_memory(shm_id, arr)
-
-img = read_image_from_shared_memory(
-    shm_id,
-    {"width": 320, "height": 240, "timestamp_ms": 0, "camera_id": "cam-01", "color_space": "RGB"}
-)
-if img is None:
-    return {"status": "ERROR", "message": "图像数据为空或尺寸无效", "error_code": "1002"}
+def normalize_image(img: Any, name: str) -> np.ndarray:
+    if not isinstance(img, np.ndarray):
+        raise ValueError(f"{name} 不是 ndarray: {type(img)}")
+    if img.dtype != np.uint8:
+        img = img.astype(np.uint8, copy=False)
+    if img.ndim == 2:
+        img = np.stack([img, img, img], axis=-1)
+    elif img.ndim == 3:
+        if img.shape[2] == 1:
+            img = np.repeat(img, 3, axis=2)
+        elif img.shape[2] == 4:
+            img = img[:, :, :3]
+        elif img.shape[2] != 3:
+            raise ValueError(f"{name} 通道数异常: shape={img.shape}")
+    else:
+        raise ValueError(f"{name} 维度异常: shape={img.shape}")
+    return img
 ```
 
-## 4. 最小算法实现（step_index 从 1 开始，两步骤）
+### execute 返回数据格式（必须遵守）
 
-```
-from typing import Any, Dict
-from procvision_algorithm_sdk import BaseAlgorithm, Session, read_image_from_shared_memory
+- 返回类型：`Dict[str, Any]`，且必须是 JSON 可序列化（不要返回自定义对象/ndarray/bytes）。
+- `status == "ERROR"`：
+  - 必须提供 `message`（用于定位问题）
+  - 建议提供 `error_code`（便于平台侧分类/统计）
+  - `data` 可省略
+- `status == "OK"`：
+  - 必须提供 `data.result_status in {"OK","NG"}`
+  - 若 `result_status == "NG"`：必须提供 `ng_reason` 与 `defect_rects`，且 `defect_rects ≤ 20`
+  - 建议统一返回 `defect_rects` 字段：OK 时返回空数组，便于平台侧统一解析
 
-class ProductAScrewCheckAlgorithm(BaseAlgorithm):
-    def __init__(self) -> None:
-        super().__init__()
-        self._supported_pids = ["A01", "A02"]
+返回示例：
 
-    def get_info(self) -> Dict[str, Any]:
-        return {
-            "name": "product_a_screw_check",
-            "version": "1.2.1",
-            "description": "A产品螺丝检测",
-            "supported_pids": self._supported_pids,
-            "steps": [
-                {"index": 1, "name": "定位主板", "params": []},
-                {"index": 2, "name": "检测左上角螺丝", "params": []}
-            ]
-        }
+OK（无缺陷）：
 
-    def pre_execute(self, step_index: int, pid: str, session: Session, user_params: Dict[str, Any], shared_mem_id: str, image_meta: Dict[str, Any]) -> Dict[str, Any]:
-        if pid not in self._supported_pids:
-            return {"status": "ERROR", "message": f"不支持的产品型号: {pid}", "error_code": "1001"}
-        img = read_image_from_shared_memory(shared_mem_id, image_meta)
-        if img is None:
-            return {"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}
-        if step_index == 1:
-            return {
-                "status": "OK",
-                "message": "定位完成",
-                "data": {
-                    "calibration_rects": [
-                        {"x": 100, "y": 120, "width": 200, "height": 250, "label": "roi-1"}
-                    ]
-                }
-            }
-        return {"status": "OK", "message": "准备就绪"}
-
-    def execute(self, step_index: int, pid: str, session: Session, user_params: Dict[str, Any], shared_mem_id: str, image_meta: Dict[str, Any]) -> Dict[str, Any]:
-        img = read_image_from_shared_memory(shared_mem_id, image_meta)
-        if img is None:
-            return {"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}
-        if step_index == 2:
-            return {"status": "OK", "data": {"result_status": "OK", "defect_rects": [], "debug": {"latency_ms": 0.0}}}
-        return {"status": "OK", "data": {"result_status": "OK", "defect_rects": [], "debug": {"latency_ms": 0.0}}}
-```
-
-### 返回 JSON 结构速查（get_info / pre_execute / execute）
-
-get_info()
-
-```
+```json
 {
-  "name": "algorithm_name",
-  "version": "1.0.0",
-  "description": "算法描述",
-  "supported_pids": ["A01", "A02"],
-  "steps": [
-    {
-      "index": 1,
-      "name": "步骤名称",
-      "params": [
-        {"key": "roi", "type": "rect", "required": true, "description": "定位区域"},
-        {"key": "threshold", "type": "float", "default": 0.7, "min": 0.3, "max": 0.9}
-      ]
-    }
-  ]
+  "status": "OK",
+  "data": {
+    "result_status": "OK",
+    "defect_rects": [],
+    "debug": {"latency_ms": 12.3}
+  }
 }
 ```
 
-pre_execute(...)
+NG（有缺陷）：
 
-```
-{ "status": "OK", "message": "准备就绪", "data": { "calibration_rects": [ {"x":100,"y":120,"width":200,"height":250,"label":"roi-1"} ] }, "debug": { "latency_ms": 25.3 } }
-{ "status": "ERROR", "message": "不支持的产品型号: A99", "error_code": "1001" }
-```
-
-execute(...)
-
-```
-{ "status": "OK", "data": { "result_status": "OK", "defect_rects": [], "position_rects": [ {"x":100,"y":120,"width":200,"height":250,"label":"screw_position"} ], "debug": { "latency_ms": 48.7, "model_version": "yolov5s_20240101" } } }
-{ "status": "OK", "data": { "result_status": "NG", "ng_reason": "检测到3处划痕", "defect_rects": [ {"x":150,"y":200,"width":60,"height":20,"label":"scratch","score":0.85} ], "debug": { "defect_count": 3, "latency_ms": 52.1 } } }
-{ "status": "ERROR", "message": "图像数据为空", "error_code": "1002" }
-```
-
-## 5. 校验与运行（CLI）
-
-- 最简校验：`procvision-cli validate ./product_a_screw_check`
-- 校验时需要进入算法文件夹执行
-- 参数说明：
-  - 命令格式：`procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--json]`
-  - `project`：算法项目根目录（位置参数）；默认 `.`（可选）
-  - `--manifest`：指定 `manifest.json` 路径（可选）
-  - `--zip`：离线包路径；检查包内结构（可选）
-  - `--json`：以 JSON 输出校验结果（可选）
-- 最简运行：`procvision-cli run ./product_a_screw_check --pid A01 --image ./test.jpg`（默认执行步骤索引为 1）
-- 参数说明：
-  - 命令格式：`procvision-cli run <project> --pid <pid> --image <path> [--step <index>] [--params <json>] [--json]`
-  - `project`：算法项目根目录（必填）
-  - `--pid`：产品型号编码；必须在 `supported_pids` 列表内（必填）
-  - `--image`：本地图片路径（JPEG/PNG）；用于写入共享内存（必填）
-  - `--step`：步骤索引；默认 1（平台从 1 开始）
-  - `--params`：用户参数（JSON 字符串）；本快速入门不使用（可选）
-  - `--json`：以 JSON 输出运行结果（可选）
-
-## 6. 依赖与离线打包
-
-- 锁定依赖：`pip freeze > requirements.txt`
-- 要点：请在目标 Python 版本（例如 3.10）的虚拟环境中执行 freeze，确保生成的版本在目标平台有可用的 wheel。
-- 下载 wheels（示例为 Windows + Python 3.10）：
-
-```
-pip download -r requirements.txt -d ./product_a_screw_check/wheels \
-  --platform win_amd64 --python-version 3.10 --implementation cp --abi cp310
+```json
+{
+  "status": "OK",
+  "data": {
+    "result_status": "NG",
+    "ng_reason": "检测到划伤",
+    "defect_rects": [
+      {"x": 94, "y": 269, "width": 319, "height": 398, "label": "scratch", "score": 0.87}
+    ]
+  }
+}
 ```
 
-- 最简打包：`procvision-cli package ./product_a_screw_check`
-- 默认参数（可省略）：
-  - `--output`：按 `name/version` 生成 `<name>-v<version>-offline.zip`
-  - `--auto-freeze`：开启，缺失 `requirements.txt` 时自动生成
-  - `--wheels-platform`：`win_amd64`
-  - `--python-version`：`3.10`（或读取项目根 `.procvision_env.json`）
-  - `--implementation`：`cp`
-  - `--abi`：`cp310`（或读取项目根 `.procvision_env.json`）
-  - 说明：初始化时会生成 `.procvision_env.json`，打包默认读取其中的目标环境配置。
-- 参数说明：
-  - 命令格式：`procvision-cli package <project> [--output <zip>] [--requirements <path>] [--auto-freeze] [--wheels-platform <p>] [--python-version <v>] [--implementation <impl>] [--abi <abi>] [--skip-download]`
-  - `project`：算法项目根目录（必填）
-  - `--output|-o`：输出 zip 路径；默认 `name-version-offline.zip`（可选）
-  - `--requirements|-r`：`requirements.txt` 路径；缺失时可配 `--auto-freeze`（可选）
-  - `--auto-freeze|-a`：自动生成 `requirements.txt`（`pip freeze`）（可选）
-  - `--wheels-platform|-w`：目标平台；默认读取缓存或 `win_amd64`
-  - `--python-version|-p`：目标 Python 版本；默认读取缓存或 `3.10`
-  - `--implementation|-i`：Python 实现；默认读取缓存或 `cp`
-  - `--abi|-b`：ABI；默认读取缓存或 `cp310`
-  - `--skip-download|-s`：跳过依赖下载，仅打包现有内容（可选）
+ERROR（执行失败）：
 
-## 7. 交付前核对（必查）
+```json
+{
+  "status": "ERROR",
+  "message": "模型加载失败",
+  "error_code": "2001"
+}
+```
 
-- `supported_pids` 与 `get_info()` 完全一致
-- `step_index` 从 1 开始（`pre_execute/execute`）
-- `pre_execute` 返回 `status: OK/ERROR`；含 `message`
-- `execute` 返回 `status: OK/ERROR`；OK 时 `data.result_status: OK/NG`
-- NG 时包含 `ng_reason` 与 `defect_rects≤20`
-- 离线包结构：源码目录、`manifest.json`、`requirements.txt`、`wheels/`、可选 `assets/`
+## 4. 本地运行与校验
+
+```bash
+procvision-cli validate ./demo_algo
+procvision-cli validate ./demo_algo --full --tail-logs
+procvision-cli run ./demo_algo --cur-image ./cur.jpg --guide-image ./guide.jpg --step-desc "Step 1" --guide-info @guide.json --json
+```
+
+### validate 参数说明
+
+用途：
+
+- 校验项目目录中的 `manifest.json` 与入口类可导入、`execute` 结构正确
+- 可选校验离线 zip 的结构完整性
+
+用法：
+
+```bash
+procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--full] [--entry <module:Class>] [--tail-logs] [--json]
+```
+
+- `project`：算法项目根目录（默认 `.`）
+- `--manifest`：显式指定 `manifest.json` 路径
+- `--zip`：离线包路径（检查包内是否包含 manifest/requirements/wheels）
+- `--full`：通过适配器子进程完成握手并调用一次 `execute`
+- `--entry`：显式入口 `<module:Class>`（覆盖自动发现，仅 `--full` 使用）
+- `--tail-logs`：`--full` 模式实时跟随子进程 `stderr` 日志
+- `--json`：输出 JSON 报告（用于 CI/脚本）
+
+### run 参数说明
+
+用途：
+
+- 用本地图片写入共享内存后，通过适配器子进程调用一次 `execute`
+
+用法：
+
+```bash
+procvision-cli run <project> --cur-image <path> (--guide-image <path> | --image <path>) [--step <index>] [--step-desc <text>] [--guide-info <json|@file>] [--entry <module:Class>] [--tail-logs] [--json]
+```
+
+- `project`：算法项目根目录（必须包含 `manifest.json`）
+- `--cur-image`：引导图路径（JPEG/PNG）
+- `--guide-image`：相机采集图路径（JPEG/PNG）
+- `--image`：`--guide-image` 的别名（兼容参数）
+- `--step`：步骤索引（默认 `1`）
+- `--step-desc`：步骤描述文本（中英文均可）
+- `--guide-info`：guide_info JSON 字符串，或 `@file.json`
+- `--entry`：显式入口 `<module:Class>`（覆盖自动发现）
+- `--tail-logs`：实时跟随子进程 `stderr` 日志
+- `--json`：输出 JSON 结果
+
+退出码：
+
+- `0`：`execute.status == "OK"`
+- `1`：其它情况
+
+### package 参数说明（离线交付）
+
+用法：
+
+```bash
+procvision-cli package <project> [-o <zip>] [-r <requirements.txt>] [-a] [-w <platform>] [-p <pyver>] [-i <impl>] [-b <abi>] [-s] [--embed-python|--no-embed-python] [--python-runtime <dir>] [--runtime-python-version <v>] [--runtime-abi <abi>]
+```
+
+- `-o/--output`：输出 zip 路径（默认按 `name/version` 生成）
+- `-r/--requirements`：requirements 文件路径（默认使用项目内文件；缺失时尝试自动生成）
+- `-a/--auto-freeze`：缺少 requirements 时自动执行 `pip freeze` 生成（当前实现默认开启）
+- `-w/--wheels-platform`：目标平台（默认 `win_amd64` 或读取 `.procvision_env.json`）
+- `-p/--python-version`：目标 Python 版本（默认 `3.10` 或读取 `.procvision_env.json`）
+- `-i/--implementation`：实现（默认 `cp`）
+- `-b/--abi`：ABI（默认 `cp310`）
+- `-s/--skip-download`：跳过 `pip download`，仅打包现有 `wheels/`
+- `--embed-python/--no-embed-python`：是否把 Python 运行时一并打包（默认开启）
+- `--python-runtime`：运行时目录（Windows embeddable 或 venv 根目录）
+- `--runtime-python-version`：运行时版本标识（如 `3.10`）
+- `--runtime-abi`：运行时 ABI（如 `cp310`）

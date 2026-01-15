@@ -1,36 +1,28 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "procvision_algorithm_sdk"
-version = "0.0.7"
-description = "ProcVision algorithm SDK"
-readme = "README.md"
-requires-python = ">=3.10"
-authors = [{ name = "ProcVision Team" }]
-license = { text = "MIT" }
-dependencies = ["numpy>=1.21", "pillow>=10.0.0"]
-
-keywords = ["vision", "sdk", "procvision", "algorithm", "industrial"]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Image Processing",
+name = "procvision-algorithm-sdk"
+version = "0.3.0"
+description = "ProcVision Algorithm SDK"
+authors = [
+    {name = "Southwest AI Team", email = "ai@southwest.com"},
 ]
-
-[project.urls]
-Homepage = "https://example.com/procvision"
-Repository = "https://example.com/procvision/algorithm-sdk"
-Issues = "https://example.com/procvision/algorithm-sdk/issues"
+dependencies = [
+    "numpy",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = {text = "MIT"}
 
 [project.scripts]
 procvision-cli = "procvision_algorithm_sdk.cli:main"
+procvision-adapter = "procvision_algorithm_sdk.adapter.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["procvision_algorithm_sdk*"]
+
+[tool.procvision.algorithm]
+entry_point = "algorithm.main:Algorithm"

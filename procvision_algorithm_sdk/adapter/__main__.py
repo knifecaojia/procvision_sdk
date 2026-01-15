@@ -5,11 +5,14 @@ import os
 import sys
 import time
 import re
+import threading
 from typing import Any, Dict, Optional
 
 from ..logger import StructuredLogger
 from ..base import BaseAlgorithm
-from ..session import Session
+from ..shared_memory import read_image_from_shared_memory
+
+_PROTO_OUT = None
 
 
 def _now_ms() -> int:
@@ -19,8 +22,9 @@ def _now_ms() -> int:
 def _write_frame(payload: Dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     length = len(data).to_bytes(4, byteorder="big")
-    sys.stdout.buffer.write(length + data)
-    sys.stdout.buffer.flush()
+    out = _PROTO_OUT or sys.stdout.buffer
+    out.write(length + data)
+    out.flush()
 
 
 def _read_exact(n: int) -> Optional[bytes]:
@@ -135,12 +139,7 @@ def _send_hello() -> None:
             "call",
             "shutdown",
             "shared_memory:v1",
-            "info",
-            "setup",
-            "teardown",
-            "reset",
-            "on_step_start",
-            "on_step_finish"
+            "execute"
         ]
     })
 
@@ -158,8 +157,8 @@ def _send_shutdown_ack() -> None:
     _write_frame({"type": "shutdown", "timestamp_ms": _now_ms(), "status": "OK"})
 
 
-def _result_from(status: str, message: str, rid: str, phase: str, step_index: int, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return {"type": "result", "request_id": rid, "timestamp_ms": _now_ms(), "status": status, "message": message, "data": {"phase": phase, "step_index": step_index, **(data or {})}}
+def _result_from(status: str, message: str, rid: str, step_index: int, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {"type": "result", "request_id": rid, "timestamp_ms": _now_ms(), "status": status, "message": message, "data": {"step_index": step_index, **(data or {})}}
 
 
 def main() -> None:
@@ -171,6 +170,54 @@ def main() -> None:
     args = parser.parse_args()
 
     logger = StructuredLogger()
+    global _PROTO_OUT
+    _PROTO_OUT = os.fdopen(os.dup(1), "wb", closefd=True)
+    strict_stdio = str(os.environ.get("PROC_STRICT_STDIO") or "").strip().lower() in {"1", "true", "yes", "on"}
+    stdout_guard = {"active": False, "bytes": 0, "preview": b""}
+    guard_lock = threading.Lock()
+    guard_thread = None
+
+    if strict_stdio:
+        r_fd, w_fd = os.pipe()
+        try:
+            os.dup2(w_fd, 1)
+        finally:
+            try:
+                os.close(w_fd)
+            except Exception:
+                pass
+        try:
+            sys.stdout.reconfigure(line_buffering=True, write_through=True)
+        except Exception:
+            pass
+
+        def _stdout_reader() -> None:
+            while True:
+                try:
+                    chunk = os.read(r_fd, 4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                try:
+                    os.write(2, chunk)
+                except Exception:
+                    pass
+                with guard_lock:
+                    if stdout_guard["active"]:
+                        stdout_guard["bytes"] += len(chunk)
+                        if len(stdout_guard["preview"]) < 4096:
+                            remain = 4096 - len(stdout_guard["preview"])
+                            stdout_guard["preview"] += chunk[:remain]
+
+        guard_thread = threading.Thread(target=_stdout_reader, daemon=True)
+        guard_thread.start()
+    else:
+        try:
+            os.dup2(2, 1)
+        except Exception:
+            pass
+
     _send_hello()
 
     ep = _discover_entry(args.entry)
@@ -185,10 +232,6 @@ def main() -> None:
 
     running = False
     try:
-        try:
-            alg.setup()
-        except Exception:
-            pass
         while True:
             msg = _read_frame()
             if msg is None:
@@ -200,10 +243,6 @@ def main() -> None:
             if t == "hello":
                 continue
             if t == "shutdown":
-                try:
-                    alg.teardown()
-                except Exception:
-                    pass
                 _send_shutdown_ack()
                 break
             if t == "call":
@@ -214,94 +253,71 @@ def main() -> None:
                 try:
                     rid = msg.get("request_id") or ""
                     d = msg.get("data", {})
-                    phase = d.get("phase") or msg.get("phase") or "execute"
                     step_index = int(d.get("step_index") or msg.get("step_index") or 1)
-                    pid = d.get("pid") or msg.get("pid") or ""
-                    session_info = d.get("session") or msg.get("session") or {}
-                    session = Session(session_info.get("id", "session"), session_info.get("context", {}))
-                    user_params = d.get("user_params") or msg.get("user_params") or {}
-                    shared_mem_id = d.get("shared_mem_id") or msg.get("shared_mem_id") or ""
-                    image_meta = d.get("image_meta") or msg.get("image_meta") or {}
-                    try:
-                        alg.on_step_start(step_index, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
-                    except Exception:
-                        pass
-                    if phase == "info":
-                        if not hasattr(alg, "get_info"):
-                            _send_error("algorithm does not implement get_info", "1000", rid)
-                        else:
-                            info = alg.get_info()
-                            if isinstance(info, dict):
-                                _write_frame(_result_from("OK", "", rid, "info", 0, {"info": info}))
-                            else:
-                                _send_error("invalid get_info return", "1000", rid)
-                    elif phase == "setup":
-                        if not hasattr(alg, "setup"):
-                            _send_error("algorithm does not implement setup", "1000", rid)
-                        else:
-                            alg.setup()
-                            _write_frame(_result_from("OK", "", rid, "setup", step_index))
-                    elif phase == "teardown":
-                        if not hasattr(alg, "teardown"):
-                            _send_error("algorithm does not implement teardown", "1000", rid)
-                        else:
-                            alg.teardown()
-                            _write_frame(_result_from("OK", "", rid, "teardown", step_index))
-                    elif phase == "reset":
-                        if not hasattr(alg, "reset"):
-                            _send_error("algorithm does not implement reset", "1000", rid)
-                        else:
-                            alg.reset(session)
-                            _write_frame(_result_from("OK", "", rid, "reset", step_index))
-                    elif phase == "on_step_start":
-                        if not hasattr(alg, "on_step_start"):
-                            _send_error("algorithm does not implement on_step_start", "1000", rid)
-                        else:
-                            ctx = {"pid": pid, "trace_id": session.context.get("trace_id")}
-                            alg.on_step_start(step_index, session, ctx)
-                            _write_frame(_result_from("OK", "", rid, "on_step_start", step_index))
-                    elif phase == "on_step_finish":
-                        if not hasattr(alg, "on_step_finish"):
-                            _send_error("algorithm does not implement on_step_finish", "1000", rid)
-                        else:
-                            alg.on_step_finish(step_index, session, user_params)
-                            _write_frame(_result_from("OK", "", rid, "on_step_finish", step_index))
-                    elif phase == "pre":
-                        res = alg.pre_execute(step_index, pid, session, user_params, shared_mem_id, image_meta)
-                        if isinstance(res, dict):
-                            st = res.get("status") or "OK"
-                            msg_text = res.get("message") or ""
-                            data = res.get("data") or {}
-                            _write_frame(_result_from(st, msg_text, rid, "pre", step_index, data))
-                        else:
-                            _send_error("invalid pre_execute return", "1000", rid)
+                    step_desc = str(d.get("step_desc") or msg.get("step_desc") or "")
+                    guide_info = d.get("guide_info") if "guide_info" in d else msg.get("guide_info")
+                    if guide_info is None:
+                        guide_info = []
+                    cur_image_shm_id = str(d.get("cur_image_shm_id") or msg.get("cur_image_shm_id") or "")
+                    cur_image_meta = d.get("cur_image_meta") or msg.get("cur_image_meta") or {}
+                    guide_image_shm_id = str(d.get("guide_image_shm_id") or msg.get("guide_image_shm_id") or "")
+                    guide_image_meta = d.get("guide_image_meta") or msg.get("guide_image_meta") or {}
+                    if not cur_image_shm_id or not guide_image_shm_id:
+                        _send_error("missing cur_image_shm_id/guide_image_shm_id", "1000", rid)
+                        continue
+                    cur_image = read_image_from_shared_memory(cur_image_shm_id, cur_image_meta)
+                    guide_image = read_image_from_shared_memory(guide_image_shm_id, guide_image_meta)
+                    if strict_stdio:
+                        with guard_lock:
+                            stdout_guard["active"] = True
+                            stdout_guard["bytes"] = 0
+                            stdout_guard["preview"] = b""
+                    res = alg.execute(step_index, step_desc, cur_image, guide_image, guide_info)
+                    out_bytes = 0
+                    out_preview = b""
+                    if strict_stdio:
+                        try:
+                            sys.stdout.flush()
+                        except Exception:
+                            pass
+                        time.sleep(0.02)
+                        with guard_lock:
+                            out_bytes = int(stdout_guard["bytes"])
+                            out_preview = bytes(stdout_guard["preview"])
+                            stdout_guard["active"] = False
+                    if strict_stdio and out_bytes > 0:
+                        sample = ""
+                        try:
+                            sample = out_preview.decode("utf-8", errors="replace")
+                        except Exception:
+                            sample = ""
+                        logger.error("stdout_contaminated", stdout_bytes=out_bytes, sample=sample)
+                        _send_error("stdout 污染：禁止向 stdout 输出，请改用 stderr/StructuredLogger", "1010", rid)
+                        continue
+                    if isinstance(res, dict):
+                        st = res.get("status") or "OK"
+                        msg_text = res.get("message") or ""
+                        data = res.get("data") or {}
+                        _write_frame(_result_from(st, msg_text, rid, step_index, data))
                     else:
-                        res = alg.execute(step_index, pid, session, user_params, shared_mem_id, image_meta)
-                        if isinstance(res, dict):
-                            st = res.get("status") or "OK"
-                            msg_text = res.get("message") or ""
-                            data = res.get("data") or {}
-                            _write_frame(_result_from(st, msg_text, rid, "execute", step_index, data))
-                        else:
-                            _send_error("invalid execute return", "1000", rid)
-                    try:
-                        alg.on_step_finish(step_index, session, res if isinstance(res, dict) else {})
-                    except Exception:
-                        pass
+                        _send_error("invalid execute return", "1000", rid)
                 except Exception as e:
                     _send_error(str(e), "1009", msg.get("request_id"))
                 finally:
                     running = False
                 continue
-        try:
-            alg.teardown()
-        except Exception:
-            pass
     except KeyboardInterrupt:
-        try:
-            alg.teardown()
-        except Exception:
-            pass
+        pass
+    try:
+        if strict_stdio:
+            try:
+                os.close(r_fd)
+            except Exception:
+                pass
+        if guard_thread is not None:
+            guard_thread.join(timeout=0.2)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

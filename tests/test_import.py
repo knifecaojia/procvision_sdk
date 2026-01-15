@@ -4,12 +4,8 @@ def test_import():
     assert Session("s").id == "s"
 
     class A(BaseAlgorithm):
-        def get_info(self):
-            return {}
-        def pre_execute(self, step_index, pid, session, user_params, shared_mem_id, image_meta):
-            return {"status": "OK", "message": "准备就绪"}
-        def execute(self, step_index, pid, session, user_params, shared_mem_id, image_meta):
-            return {"status": "OK", "data": {"result_status": "OK"}}
+        def execute(self, step_index, step_desc, cur_image, guide_image, guide_info):
+            return {"status": "OK", "data": {"result_status": "OK", "defect_rects": []}}
 
     a = A()
     assert isinstance(a, BaseAlgorithm)
