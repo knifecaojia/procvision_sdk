@@ -9,10 +9,8 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(report["summary"].get("status"), "PASS")
 
     def test_run_algorithm_example(self):
-        result = run("./algorithm-example", "p001", "./spec.md", None)
-        self.assertIn("pre_execute", result)
+        result = run("./algorithm-example", "./spec.md", "./spec.md", 1, "demo", [])
         self.assertIn("execute", result)
-        self.assertIn(result["pre_execute"].get("status"), {"OK", "ERROR"})
         self.assertIn(result["execute"].get("status"), {"OK", "ERROR"})
 
 

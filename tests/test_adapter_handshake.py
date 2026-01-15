@@ -43,17 +43,13 @@ class TestAdapterHandshake(unittest.TestCase):
         (base / "algorithm" / "__init__.py").write_text("\n")
         (base / "algorithm" / "main.py").write_text(
             "from typing import Any, Dict\n"
-            "from procvision_algorithm_sdk import BaseAlgorithm, Session, read_image_from_shared_memory\n"
+            "from procvision_algorithm_sdk import BaseAlgorithm\n"
             "class Algorithm(BaseAlgorithm):\n"
-            "    def get_info(self) -> Dict[str, Any]:\n"
-            "        return {\"name\": \"algorithm\", \"version\": \"1.0\", \"supported_pids\": [\"D01\"], \"steps\": [{\"index\": 1, \"name\": \"s\", \"params\": []}]}\n"
-            "    def pre_execute(self, step_index: int, pid: str, session: Session, user_params: Dict[str, Any], shared_mem_id: str, image_meta: Dict[str, Any]) -> Dict[str, Any]:\n"
-            "        return {\"status\": \"OK\", \"message\": \"ok\"}\n"
-            "    def execute(self, step_index: int, pid: str, session: Session, user_params: Dict[str, Any], shared_mem_id: str, image_meta: Dict[str, Any]) -> Dict[str, Any]:\n"
-            "        return {\"status\": \"OK\", \"data\": {\"result_status\": \"OK\"}}\n"
+            "    def execute(self, step_index: int, step_desc: str, cur_image: Any, guide_image: Any, guide_info: Any) -> Dict[str, Any]:\n"
+            "        return {\"status\": \"OK\", \"data\": {\"result_status\": \"OK\", \"defect_rects\": []}}\n"
         )
         (base / "manifest.json").write_text(
-            json.dumps({"name": "algorithm", "version": "1.0", "entry_point": "algorithm.main:Algorithm", "supported_pids": ["D01"]}, ensure_ascii=False)
+            json.dumps({"name": "algorithm", "version": "1.0", "entry_point": "algorithm.main:Algorithm"}, ensure_ascii=False)
         )
         return td, str(base)
 
@@ -67,6 +63,19 @@ class TestAdapterHandshake(unittest.TestCase):
             hello = _read_frame(p.stdout)
             if hello is None:
                 p.terminate()
+                try:
+                    p.wait(timeout=1.0)
+                except Exception:
+                    pass
+                try:
+                    if p.stdin:
+                        p.stdin.close()
+                    if p.stdout:
+                        p.stdout.close()
+                    if p.stderr:
+                        p.stderr.close()
+                except Exception:
+                    pass
                 return
             self.assertEqual(hello.get("type"), "hello")
             _write_frame(p.stdin, {"type": "hello", "runner_version": "dev"})
@@ -74,6 +83,19 @@ class TestAdapterHandshake(unittest.TestCase):
             ack = _read_frame(p.stdout)
             self.assertEqual(ack.get("type"), "shutdown")
             p.terminate()
+            try:
+                p.wait(timeout=1.0)
+            except Exception:
+                pass
+            try:
+                if p.stdin:
+                    p.stdin.close()
+                if p.stdout:
+                    p.stdout.close()
+                if p.stderr:
+                    p.stderr.close()
+            except Exception:
+                pass
         finally:
             td.cleanup()
 

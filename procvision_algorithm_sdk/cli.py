@@ -12,8 +12,9 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from .base import BaseAlgorithm
-from .session import Session
 from .shared_memory import dev_write_image_to_shared_memory
 
 
@@ -60,7 +61,7 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
         summary = {"status": "FAIL", "passed": 1, "failed": 1}
         return {"summary": summary, "checks": checks}
 
-    required = ["name", "version", "entry_point", "supported_pids"]
+    required = ["name", "version", "entry_point"]
     missing = [k for k in required if k not in mf]
     _add(checks, "manifest_fields", len(missing) == 0, ",".join(missing))
 
@@ -76,52 +77,24 @@ def validate(project: Optional[str], manifest: Optional[str], zip_path: Optional
     if cls:
         try:
             alg = cls()
-            try:
-                alg.setup()
-            except Exception:
-                pass
-            info = alg.get_info()
-            steps_ok = isinstance(info, dict) and isinstance(info.get("steps", []), list)
-            _add(checks, "get_info", isinstance(info, dict), "dict returned")
-            _add(checks, "step_schema", steps_ok, "steps present")
-
-            mf_pids = mf.get("supported_pids", [])
-            info_pids = info.get("supported_pids", [])
-            _add(checks, "supported_pids_match", mf_pids == info_pids, f"manifest={mf_pids} info={info_pids}")
-
-            pid = (mf_pids or ["A01"])[0]
-            session = Session("session-demo", {"product_code": pid, "operator": "dev", "trace_id": "trace-demo"})
-            image_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev"}
-            try:
-                alg.on_step_start(1, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
-            except Exception:
-                pass
-            pre = alg.pre_execute(1, pid, session, {}, f"dev-shm:{session.id}", image_meta)
-            _add(checks, "pre_execute_return_dict", isinstance(pre, dict), "dict")
-            pre_status = pre.get("status")
-            _add(checks, "pre_status_valid", pre_status in {"OK", "ERROR"}, str(pre_status))
-            _add(checks, "pre_message_present", bool(pre.get("message")), str(pre.get("message")))
-
-            exe = alg.execute(1, pid, session, {}, f"dev-shm:{session.id}", image_meta)
+            cur_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            guide_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            exe = alg.execute(1, "validate-smoke", cur_image, guide_image, [])
             _add(checks, "execute_return_dict", isinstance(exe, dict), "dict")
-            exe_status = exe.get("status")
+            exe_status = exe.get("status") if isinstance(exe, dict) else None
             _add(checks, "execute_status_valid", exe_status in {"OK", "ERROR"}, str(exe_status))
-            if exe_status == "OK":
+            if isinstance(exe, dict) and exe_status == "OK":
                 data = exe.get("data", {})
                 rs = data.get("result_status")
-                _add(checks, "execute_result_status_valid", rs in {"OK", "NG", None}, str(rs))
+                _add(checks, "execute_result_status_valid", rs in {"OK", "NG"}, str(rs))
                 if rs == "NG":
                     ng_reason_ok = "ng_reason" in data and bool(data.get("ng_reason"))
                     _add(checks, "ng_reason_present", ng_reason_ok, str(data.get("ng_reason")))
                     dr = data.get("defect_rects", [])
                     _add(checks, "defect_rects_type", isinstance(dr, list), f"len={len(dr)}")
-                    _add(checks, "defect_rects_count_limit", len(dr) <= 20, f"len={len(dr)}")
+                    _add(checks, "defect_rects_count_limit", isinstance(dr, list) and len(dr) <= 20, f"len={len(dr) if isinstance(dr, list) else 'n/a'}")
             try:
-                alg.on_step_finish(1, session, exe if isinstance(exe, dict) else {})
-            except Exception:
                 pass
-            try:
-                alg.teardown()
             except Exception:
                 pass
         except Exception as e:
@@ -162,63 +135,29 @@ def _print_validate_human(report: Dict[str, Any]) -> None:
             print(f"{marker} {name}")
 
 
-def run(project: str, pid: str, image_path: str, params_json: Optional[str], step_index: Optional[int] = None) -> Dict[str, Any]:
+def run(project: str, cur_image_path: str, guide_image_path: str, step_index: Optional[int], step_desc: str, guide_info: Any) -> Dict[str, Any]:
     manifest_path = os.path.join(project, "manifest.json")
     mf = _load_manifest(manifest_path)
     cls = _import_entry(mf["entry_point"], project)
-    alg = cls()
-    session = Session(
-        f"session-{int(time.time()*1000)}",
-        {"product_code": pid, "operator": "dev", "trace_id": f"trace-{int(time.time()*1000)}"},
-    )
-    shared_mem_id = f"dev-shm:{session.id}"
-    try:
-        with open(image_path, "rb") as f:
-            data = f.read()
-        dev_write_image_to_shared_memory(shared_mem_id, data)
-    except Exception:
-        pass
+    alg: BaseAlgorithm = cls()
 
-    try:
-        import PIL.Image as Image  # type: ignore
-        img = Image.open(image_path)
-        width, height = img.size
-    except Exception:
-        width, height = 640, 480
+    def _load_img(path: str) -> Any:
+        try:
+            import PIL.Image as Image  # type: ignore
+            img = Image.open(path)
+            return np.array(img)
+        except Exception:
+            return np.zeros((480, 640, 3), dtype=np.uint8)
 
-    image_meta = {"width": int(width), "height": int(height), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev"}
-    try:
-        user_params = json.loads(params_json) if params_json else {}
-    except Exception:
-        user_params = {}
-
+    cur_image = _load_img(cur_image_path)
+    guide_image = _load_img(guide_image_path)
     sidx = int(step_index) if step_index is not None else 1
-    try:
-        alg.setup()
-    except Exception:
-        pass
-    try:
-        alg.on_step_start(sidx, session, {"pid": pid, "trace_id": session.context.get("trace_id")})
-    except Exception:
-        pass
-    pre = alg.pre_execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
-    exe = alg.execute(sidx, pid, session, user_params, shared_mem_id, image_meta)
-    try:
-        alg.on_step_finish(sidx, session, exe if isinstance(exe, dict) else {})
-    except Exception:
-        pass
-    try:
-        alg.teardown()
-    except Exception:
-        pass
-    return {"pre_execute": pre, "execute": exe}
+    exe = alg.execute(sidx, step_desc, cur_image, guide_image, guide_info)
+    return {"execute": exe}
 
 
 def _print_run_human(result: Dict[str, Any]) -> None:
-    pre = result.get("pre_execute", {})
     exe = result.get("execute", {})
-    print("预执行:")
-    print(f"  status: {pre.get('status')} | message: {pre.get('message')}")
     data = exe.get("data", {})
     print("执行:")
     print(f"  status: {exe.get('status')} | result_status: {data.get('result_status')}")
@@ -430,12 +369,9 @@ def _class_name_from(name: str) -> str:
     return (title or "Algorithm") + "Algorithm"
 
 
-def init_project(name: str, target_dir: Optional[str], pids_csv: Optional[str], version: str, description: Optional[str]) -> Dict[str, Any]:
+def init_project(name: str, target_dir: Optional[str], version: str, description: Optional[str]) -> Dict[str, Any]:
     safe_mod = _sanitize_module_name(name)
     class_name = _class_name_from(name)
-    pids = [p.strip() for p in (pids_csv or "").split(",") if p.strip()]
-    if not pids:
-        pids = ["PID_TO_FILL"]
     base = os.path.abspath(target_dir or f"{safe_mod}")
     pkg_dir = os.path.join(base, safe_mod)
     os.makedirs(pkg_dir, exist_ok=True)
@@ -445,16 +381,6 @@ def init_project(name: str, target_dir: Optional[str], pids_csv: Optional[str], 
         "version": version,
         "entry_point": f"{safe_mod}.main:{class_name}",
         "description": description or f"{name} 算法包",
-        "supported_pids": pids,
-        "steps": [
-            {
-                "index": 0,
-                "name": "示例步骤",
-                "params": [
-                    {"key": "threshold", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0}
-                ],
-            }
-        ],
     }
 
     with open(os.path.join(base, "manifest.json"), "w", encoding="utf-8") as f:
@@ -466,67 +392,31 @@ def init_project(name: str, target_dir: Optional[str], pids_csv: Optional[str], 
     main_py = f"""
 from typing import Any, Dict
 
-from procvision_algorithm_sdk import BaseAlgorithm, Session, read_image_from_shared_memory
+from procvision_algorithm_sdk import BaseAlgorithm
 
 
 class {class_name}(BaseAlgorithm):
     def __init__(self) -> None:
         super().__init__()
-        self._supported_pids = {pids}
-
-    def get_info(self) -> Dict[str, Any]:
-        return {{
-            "name": "{name}",
-            "version": "{version}",
-            "description": "{description or name + ' 算法包'}",
-            "supported_pids": self._supported_pids,
-            "steps": [
-                {{
-                    "index": 0,
-                    "name": "示例步骤",
-                    "params": [
-                        {{"key": "threshold", "type": "float", "default": 0.5, "min": 0.0, "max": 1.0}}
-                    ],
-                }}
-            ],
-        }}
-
-    def pre_execute(
-        self,
-        step_index: int,
-        pid: str,
-        session: Session,
-        user_params: Dict[str, Any],
-        shared_mem_id: str,
-        image_meta: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        if pid not in self._supported_pids:
-            return {{"status": "ERROR", "message": f"不支持的产品型号: {{pid}}", "error_code": "1001"}}
-        img = read_image_from_shared_memory(shared_mem_id, image_meta)
-        if img is None:
-            return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
-        w = int(image_meta.get("width", 640))
-        h = int(image_meta.get("height", 480))
-        return {{"status": "OK", "message": "准备就绪", "debug": {{"width": w, "height": h, "latency_ms": 0.0}}}}
 
     def execute(
         self,
         step_index: int,
-        pid: str,
-        session: Session,
-        user_params: Dict[str, Any],
-        shared_mem_id: str,
-        image_meta: Dict[str, Any],
+        step_desc: str,
+        cur_image: Any,
+        guide_image: Any,
+        guide_info: Any,
     ) -> Dict[str, Any]:
-        img = read_image_from_shared_memory(shared_mem_id, image_meta)
-        if img is None:
+        if cur_image is None or guide_image is None:
             return {{"status": "ERROR", "message": "图像数据为空", "error_code": "1002"}}
-        th = float(user_params.get("threshold", 0.5))
-        result_status = "OK" if th >= 0.5 else "NG"
-        data = {{"result_status": result_status, "defect_rects": [], "debug": {{"latency_ms": 0.0}}}}
-        if result_status == "NG":
-            data.update({{"ng_reason": "threshold too low"}})
-        return {{"status": "OK", "data": data}}
+        return {{
+            "status": "OK",
+            "data": {{
+                "result_status": "OK",
+                "defect_rects": [],
+                "debug": {{"step_index": step_index, "step_desc": step_desc, "guide_info_count": len(guide_info or [])}},
+            }},
+        }}
 """
     with open(os.path.join(pkg_dir, "main.py"), "w", encoding="utf-8") as f:
         f.write(main_py)
@@ -604,20 +494,23 @@ def _stderr_printer(pipe) -> None:
         pass
 
 
-def run_adapter(project: str, pid: str, image_path: str, params_json: Optional[str], step_index: Optional[int] = None, entry: Optional[str] = None, tail_logs: bool = False) -> Dict[str, Any]:
+def run_adapter(
+    project: str,
+    cur_image_path: str,
+    guide_image_path: str,
+    step_index: Optional[int],
+    step_desc: str,
+    guide_info: Any,
+    entry: Optional[str] = None,
+    tail_logs: bool = False,
+) -> Dict[str, Any]:
     manifest_path = os.path.join(project, "manifest.json")
     if not os.path.isfile(manifest_path):
-        return {"pre_execute": {"status": "ERROR", "message": "未找到 manifest.json"}, "execute": {"status": "ERROR", "message": "未找到 manifest.json"}}
-    if not os.path.isfile(image_path):
-        return {"pre_execute": {"status": "ERROR", "message": "图片文件不存在"}, "execute": {"status": "ERROR", "message": "图片文件不存在"}}
-    try:
-        params = json.loads(params_json) if params_json else {}
-    except Exception:
-        params = {}
+        return {"execute": {"status": "ERROR", "message": "未找到 manifest.json"}}
+    if not os.path.isfile(cur_image_path) or not os.path.isfile(guide_image_path):
+        return {"execute": {"status": "ERROR", "message": "图片文件不存在"}}
     with open(manifest_path, "r", encoding="utf-8") as f:
         mf = json.load(f)
-    if pid not in (mf.get("supported_pids") or [pid]):
-        pass
     cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter"]
     if entry:
         cmd += ["--entry", entry]
@@ -625,7 +518,7 @@ def run_adapter(project: str, pid: str, image_path: str, params_json: Optional[s
     env["PROC_ALGO_ROOT"] = os.path.abspath(project)
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=project, env=env)
     if proc.stdout is None or proc.stdin is None:
-        return {"pre_execute": {"status": "ERROR", "message": "子进程启动失败"}, "execute": {"status": "ERROR", "message": "子进程启动失败"}}
+        return {"execute": {"status": "ERROR", "message": "子进程启动失败"}}
     log_thread = None
     if tail_logs and proc.stderr is not None:
         log_thread = threading.Thread(target=_stderr_printer, args=(proc.stderr,), daemon=True)
@@ -636,35 +529,68 @@ def run_adapter(project: str, pid: str, image_path: str, params_json: Optional[s
             proc.terminate()
         except Exception:
             pass
-        return {"pre_execute": {"status": "ERROR", "message": "adapter hello missing"}, "execute": {"status": "ERROR", "message": "adapter hello missing"}}
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+        except Exception:
+            pass
+        return {"execute": {"status": "ERROR", "message": "adapter hello missing"}}
     _write_frame(proc.stdin, {"type": "hello", "runner_version": "dev", "heartbeat_interval_ms": 5000, "heartbeat_grace_ms": 2000})
-    try:
-        with open(image_path, "rb") as f:
-            data = f.read()
-    except Exception:
-        data = b""
-    try:
-        import PIL.Image as Image  # type: ignore
-        img = Image.open(image_path)
-        width, height = img.size
-    except Exception:
-        width, height = 640, 480
+    def _read_bytes(path: str) -> bytes:
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except Exception:
+            return b""
+
+    def _img_size(path: str) -> Any:
+        try:
+            import PIL.Image as Image  # type: ignore
+            img = Image.open(path)
+            return img.size
+        except Exception:
+            return (640, 480)
+
+    cur_bytes = _read_bytes(cur_image_path)
+    guide_bytes = _read_bytes(guide_image_path)
+    cur_w, cur_h = _img_size(cur_image_path)
+    guide_w, guide_h = _img_size(guide_image_path)
+
     sidx = int(step_index) if step_index is not None else 1
-    session = {"id": f"session-{int(time.time()*1000)}", "context": {"product_code": pid, "trace_id": f"trace-{int(time.time()*1000)}"}}
-    shared_mem_id = f"dev-shm:{session['id']}"
-    image_meta = {"width": int(width), "height": int(height), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev", "color_space": "RGB"}
+    sid = f"session-{int(time.time()*1000)}"
+    cur_shm_id = f"dev-shm:{sid}:cur"
+    guide_shm_id = f"dev-shm:{sid}:guide"
+    cur_meta = {"width": int(cur_w), "height": int(cur_h), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev", "color_space": "RGB"}
+    guide_meta = {"width": int(guide_w), "height": int(guide_h), "timestamp_ms": int(time.time() * 1000), "camera_id": "cam-dev", "color_space": "RGB"}
     try:
-        dev_write_image_to_shared_memory(shared_mem_id, data)
+        dev_write_image_to_shared_memory(cur_shm_id, cur_bytes)
+        dev_write_image_to_shared_memory(guide_shm_id, guide_bytes)
     except Exception:
         pass
     rid_pre = str(uuid.uuid4())
-    call_pre = {"type": "call", "request_id": rid_pre, "data": {"phase": "pre", "step_index": sidx, "pid": pid, "session": session, "user_params": params, "shared_mem_id": shared_mem_id, "image_meta": image_meta}}
-    _write_frame(proc.stdin, call_pre)
-    pre = _read_frame(proc.stdout) or {"status": "ERROR", "message": "pre 超时"}
-    rid_exe = str(uuid.uuid4())
-    call_exe = {"type": "call", "request_id": rid_exe, "data": {"phase": "execute", "step_index": sidx, "pid": pid, "session": session, "user_params": params, "shared_mem_id": shared_mem_id, "image_meta": image_meta}}
+    call_exe = {
+        "type": "call",
+        "request_id": rid_pre,
+        "data": {
+            "step_index": sidx,
+            "step_desc": step_desc or "",
+            "guide_info": guide_info if guide_info is not None else [],
+            "cur_image_shm_id": cur_shm_id,
+            "cur_image_meta": cur_meta,
+            "guide_image_shm_id": guide_shm_id,
+            "guide_image_meta": guide_meta,
+        },
+    }
     _write_frame(proc.stdin, call_exe)
-    exe = _read_frame(proc.stdout) or {"status": "ERROR", "message": "execute 超时"}
+    raw = _read_frame(proc.stdout) or {"type": "error", "status": "ERROR", "message": "execute 超时", "error_code": "1005"}
     _write_frame(proc.stdin, {"type": "shutdown"})
     _read_frame(proc.stdout)
     try:
@@ -672,11 +598,28 @@ def run_adapter(project: str, pid: str, image_path: str, params_json: Optional[s
     except Exception:
         pass
     try:
+        proc.wait(timeout=1.0)
+    except Exception:
+        pass
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+    except Exception:
+        pass
+    try:
         if log_thread is not None:
             log_thread.join(timeout=0.5)
     except Exception:
         pass
-    return {"pre_execute": pre or {}, "execute": exe or {}}
+    if isinstance(raw, dict) and raw.get("type") == "result":
+        execute_res = {"status": raw.get("status"), "message": raw.get("message"), "data": raw.get("data", {})}
+    else:
+        execute_res = {"status": "ERROR", "message": (raw or {}).get("message") if isinstance(raw, dict) else "execute failed", "error_code": (raw or {}).get("error_code") if isinstance(raw, dict) else "1000"}
+    return {"execute": execute_res}
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -684,7 +627,7 @@ def main() -> None:
         description=(
             "ProcVision 算法开发 Dev Runner CLI\n"
             "- 验证/运行算法包（默认适配器子进程模式，可跟随日志）\n"
-            "- 使用本地图片写入共享内存并调用 pre/execute\n"
+            "- 使用本地图片写入共享内存并调用 execute\n"
             "- 构建离线交付包（默认包含 Python 运行时）"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -692,7 +635,7 @@ def main() -> None:
             "示例:\n"
             "  验证项目(适配器模式+日志): procvision-cli validate ./algorithm-example --full --tail-logs\n"
             "  验证压缩包(JSON输出): procvision-cli validate --zip ./algo.zip --json\n"
-            "  本地运行(适配器模式+日志): procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg --tail-logs --json\n"
+            "  本地运行(适配器模式+日志): procvision-cli run ./algorithm-example --cur-image ./cur.jpg --guide-image ./guide.jpg --tail-logs --json\n"
             "  构建离线包(默认嵌入运行时): procvision-cli package ./algorithm-example --python-runtime <path_to_embeddable> --runtime-python-version 3.10 --runtime-abi cp310\n"
             "  构建离线包(不嵌入运行时): procvision-cli package ./algorithm-example --no-embed-python\n"
         ),
@@ -702,39 +645,33 @@ def main() -> None:
     v = sub.add_parser(
         "validate",
         help="校验算法包结构与入口实现",
-        description="校验 manifest/入口类/supported_pids/返回结构；支持 --full 适配器子进程完整校验与 --tail-logs 日志输出",
+        description="校验 manifest/入口类/execute 返回结构；支持 --full 适配器子进程完整校验与 --tail-logs 日志输出",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     v.add_argument("project", nargs="?", default=".", help="算法项目根目录，默认当前目录")
     v.add_argument("--manifest", type=str, default=None, help="指定 manifest.json 路径（可替代 --project）")
     v.add_argument("--zip", type=str, default=None, help="离线交付 zip 包路径（检查 wheels/ 与必需文件）")
     v.add_argument("--json", action="store_true", help="以 JSON 输出结果")
-    v.add_argument("--full", action="store_true", help="使用适配器子进程执行完整握手与 pre/execute 校验")
+    v.add_argument("--full", action="store_true", help="使用适配器子进程执行完整握手与 execute 校验")
     v.add_argument("--entry", type=str, default=None, help="显式指定入口 <module:Class>，用于 --full 模式")
-    v.add_argument("--legacy-validate", action="store_true", help="使用旧的本地导入校验路径")
     v.add_argument("--tail-logs", action="store_true", help="在 --full 模式下实时输出子进程日志")
 
     r = sub.add_parser(
         "run",
         help="本地模拟运行算法",
         description=(
-            "默认适配器子进程模式，使用本地图片写入共享内存并调用 pre/execute；支持 --entry 指定入口与 --tail-logs 跟随日志。\n"
-            "注意: pid 必须在 manifest 的 supported_pids 中。"
+            "默认适配器子进程模式，使用两张本地图片写入共享内存并调用 execute；支持 --entry 指定入口与 --tail-logs 跟随日志。"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     r.add_argument("project", type=str, help="算法项目根目录，包含 manifest.json 与源码")
-    r.add_argument("--pid", type=str, required=True, help="产品型号编码（必须在 supported_pids 中）")
-    r.add_argument("--image", type=str, required=True, help="本地图片路径（JPEG/PNG），将写入共享内存")
+    r.add_argument("--cur-image", type=str, required=True, help="引导图路径（JPEG/PNG），将写入共享内存")
+    r.add_argument("--guide-image", type=str, default=None, help="相机采集图路径（JPEG/PNG），将写入共享内存")
+    r.add_argument("--image", type=str, default=None, help="--guide-image 的别名（兼容参数）")
     r.add_argument("--step", type=int, default=1, help="步骤索引（平台从 1 开始；默认 1）")
-    r.add_argument(
-        "--params",
-        type=str,
-        default=None,
-        help="JSON 字符串形式的用户参数，例如 '{\"threshold\":0.8}'",
-    )
+    r.add_argument("--step-desc", type=str, default="", help="步骤描述文本（中英文均可）")
+    r.add_argument("--guide-info", type=str, default="[]", help="guide_info JSON 字符串，或 @file.json")
     r.add_argument("--entry", type=str, default=None, help="显式指定入口 <module:Class>，否则由适配器自动发现")
-    r.add_argument("--legacy-run", action="store_true", help="使用旧的本地直接导入执行路径")
     r.add_argument("--tail-logs", action="store_true", help="在适配器模式下实时输出子进程日志")
     r.add_argument("--json", action="store_true", help="以 JSON 输出结果")
 
@@ -764,13 +701,12 @@ def main() -> None:
         help="初始化算法包脚手架",
         description=(
             "根据算法名称初始化脚手架，生成 manifest.json 与包源码目录。\n"
-            "生成后请按注释修改 PID 列表、步骤 schema 与检测逻辑"
+            "生成后请按注释修改检测逻辑"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     i.add_argument("name", type=str, help="算法名称（用于 manifest 与入口类名）")
     i.add_argument("-d", "--dir", type=str, default=None, help="目标目录，默认在当前目录下以算法名生成")
-    i.add_argument("--pids", type=str, default="", help="支持的 PID 列表，逗号分隔，留空则生成占位 PID_TO_FILL")
     i.add_argument("-v", "--version", type=str, default="1.0.0", help="算法版本，默认 1.0.0")
     i.add_argument("-e", "--desc", type=str, default=None, help="算法描述，可选")
 
@@ -778,7 +714,7 @@ def main() -> None:
 
     if args.command == "validate":
         proj = args.project
-        if args.full and not args.legacy_validate and os.path.isdir(proj):
+        if args.full and os.path.isdir(proj):
             report = validate_adapter(proj, args.entry, args.tail_logs)
         else:
             report = validate(proj, args.manifest, args.zip)
@@ -792,27 +728,40 @@ def main() -> None:
     if args.command == "run":
         if not os.path.isdir(args.project):
             print(f"错误: 项目目录不存在: {args.project}")
-            print("示例: procvision-cli run ./algorithm-example --pid p001 --image ./test.jpg")
+            print("示例: procvision-cli run ./algorithm-example --cur-image ./cur.jpg --guide-image ./guide.jpg")
             sys.exit(2)
         manifest_path = os.path.join(args.project, "manifest.json")
         if not os.path.isfile(manifest_path):
             print(f"错误: 未找到 manifest.json: {manifest_path}")
             print("请确认项目根目录包含 manifest.json")
             sys.exit(2)
-        if not os.path.isfile(args.image):
-            print(f"错误: 图片文件不存在: {args.image}")
-            print("示例: --image ./test.jpg")
+        guide_image_path = args.guide_image or args.image
+        if not guide_image_path:
+            print("错误: 必须提供 --guide-image 或 --image")
             sys.exit(2)
-        if args.params:
+        if not os.path.isfile(args.cur_image):
+            print(f"错误: cur-image 文件不存在: {args.cur_image}")
+            print("示例: --cur-image ./cur.jpg")
+            sys.exit(2)
+        if not os.path.isfile(guide_image_path):
+            print(f"错误: guide-image 文件不存在: {guide_image_path}")
+            print("示例: --guide-image ./guide.jpg")
+            sys.exit(2)
+        guide_info_raw = args.guide_info or "[]"
+        if isinstance(guide_info_raw, str) and guide_info_raw.startswith("@"):
+            p = guide_info_raw[1:]
             try:
-                json.loads(args.params)
+                with open(p, "r", encoding="utf-8") as f:
+                    guide_info_raw = f.read()
             except Exception:
-                print("错误: --params 必须是 JSON 字符串。示例: '{\"threshold\":0.8}'")
+                print(f"错误: guide-info 文件读取失败: {p}")
                 sys.exit(2)
-        if args.legacy_run:
-            result = run(args.project, args.pid, args.image, args.params, args.step)
-        else:
-            result = run_adapter(args.project, args.pid, args.image, args.params, args.step, args.entry, args.tail_logs)
+        try:
+            guide_info = json.loads(guide_info_raw) if guide_info_raw else []
+        except Exception:
+            print("错误: --guide-info 必须是 JSON 字符串或 @file.json")
+            sys.exit(2)
+        result = run_adapter(args.project, args.cur_image, guide_image_path, args.step, args.step_desc, guide_info, args.entry, args.tail_logs)
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
@@ -843,10 +792,10 @@ def main() -> None:
         sys.exit(1)
 
     if args.command == "init":
-        res = init_project(args.name, args.dir, args.pids, args.version, args.desc)
+        res = init_project(args.name, args.dir, args.version, args.desc)
         if res.get("status") == "OK":
             print(f"初始化成功: {res.get('path')}")
-            print("下一步: 请修改生成的 main.py 注释指示的内容，并确保 manifest.json 与 get_info 一致")
+            print("下一步: 请修改生成的 main.py 注释指示的内容，并确保 manifest.json.entry_point 可导入且 execute 可运行")
             sys.exit(0)
         print(f"初始化失败: {res.get('message')}")
         sys.exit(1)
@@ -857,12 +806,9 @@ def validate_adapter(project: str, entry: Optional[str], tail_logs: bool = False
     manifest_path = os.path.join(project, "manifest.json")
     if not os.path.isfile(manifest_path):
         return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": [{"name": "manifest_exists", "result": "FAIL", "message": "manifest.json not found"}]}
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        mf = json.load(f)
-    pid_list = mf.get("supported_pids", [])
-    pid = (pid_list or ["A01"])[0]
     env = os.environ.copy()
     env["PROC_ALGO_ROOT"] = os.path.abspath(project)
+    env["PROC_STRICT_STDIO"] = "1"
     cmd = [sys.executable, "-m", "procvision_algorithm_sdk.adapter"]
     if entry:
         cmd += ["--entry", entry]
@@ -881,27 +827,48 @@ def validate_adapter(project: str, entry: Optional[str], tail_logs: bool = False
             proc.terminate()
         except Exception:
             pass
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+        except Exception:
+            pass
         return {"summary": {"status": "FAIL", "passed": 0, "failed": 1}, "checks": checks}
     _write_frame(proc.stdin, {"type": "hello", "runner_version": "dev", "heartbeat_interval_ms": 5000, "heartbeat_grace_ms": 2000})
-    rid_info = str(uuid.uuid4())
-    _write_frame(proc.stdin, {"type": "call", "request_id": rid_info, "data": {"phase": "info"}})
-    info_res = _read_frame(proc.stdout)
-    ok_info = isinstance(info_res, dict) and info_res.get("type") == "result" and info_res.get("data", {}).get("phase") == "info"
-    checks.append({"name": "get_info_result", "result": "PASS" if ok_info else "FAIL", "message": "received" if ok_info else "invalid"})
-    session = {"id": f"session-{int(time.time()*1000)}", "context": {"product_code": pid, "trace_id": f"trace-{int(time.time()*1000)}"}}
-    shared_mem_id = f"dev-shm:{session['id']}"
+    sid = f"session-{int(time.time()*1000)}"
+    cur_shm_id = f"dev-shm:{sid}:cur"
+    guide_shm_id = f"dev-shm:{sid}:guide"
     try:
-        dev_write_image_to_shared_memory(shared_mem_id, b"")
+        dev_write_image_to_shared_memory(cur_shm_id, b"")
+        dev_write_image_to_shared_memory(guide_shm_id, b"")
     except Exception:
         pass
-    image_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time()*1000), "camera_id": "cam-dev", "color_space": "RGB"}
-    rid_pre = str(uuid.uuid4())
-    _write_frame(proc.stdin, {"type": "call", "request_id": rid_pre, "data": {"phase": "pre", "step_index": 1, "pid": pid, "session": session, "user_params": {}, "shared_mem_id": shared_mem_id, "image_meta": image_meta}})
-    pre = _read_frame(proc.stdout)
-    ok_pre = isinstance(pre, dict) and pre.get("type") == "result" and (pre.get("status") in {"OK", "ERROR"})
-    checks.append({"name": "pre_result", "result": "PASS" if ok_pre else "FAIL", "message": "received" if ok_pre else "invalid"})
+    cur_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time()*1000), "camera_id": "cam-dev", "color_space": "RGB"}
+    guide_meta = {"width": 640, "height": 480, "timestamp_ms": int(time.time()*1000), "camera_id": "cam-dev", "color_space": "RGB"}
     rid_exe = str(uuid.uuid4())
-    _write_frame(proc.stdin, {"type": "call", "request_id": rid_exe, "data": {"phase": "execute", "step_index": 1, "pid": pid, "session": session, "user_params": {}, "shared_mem_id": shared_mem_id, "image_meta": image_meta}})
+    _write_frame(
+        proc.stdin,
+        {
+            "type": "call",
+            "request_id": rid_exe,
+            "data": {
+                "step_index": 1,
+                "step_desc": "validate-full",
+                "guide_info": [],
+                "cur_image_shm_id": cur_shm_id,
+                "cur_image_meta": cur_meta,
+                "guide_image_shm_id": guide_shm_id,
+                "guide_image_meta": guide_meta,
+            },
+        },
+    )
     exe = _read_frame(proc.stdout)
     ok_exe = isinstance(exe, dict) and exe.get("type") == "result" and (exe.get("status") in {"OK", "ERROR"})
     checks.append({"name": "execute_result", "result": "PASS" if ok_exe else "FAIL", "message": "received" if ok_exe else "invalid"})
@@ -916,6 +883,19 @@ def validate_adapter(project: str, entry: Optional[str], tail_logs: bool = False
     _read_frame(proc.stdout)
     try:
         proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=1.0)
+    except Exception:
+        pass
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
     except Exception:
         pass
     try:
