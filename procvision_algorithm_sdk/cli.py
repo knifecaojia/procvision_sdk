@@ -677,8 +677,7 @@ def main() -> None:
             "  验证项目(适配器模式+日志): procvision-cli validate ./algorithm-example --full --tail-logs\n"
             "  验证压缩包(JSON输出): procvision-cli validate --zip ./algo.zip --json\n"
             "  本地运行(适配器模式+日志): procvision-cli run ./algorithm-example --cur-image ./cur.jpg --guide-image ./guide.jpg --tail-logs --json\n"
-            "  构建离线包(默认嵌入运行时): procvision-cli package ./algorithm-example --python-runtime <path_to_embeddable> --runtime-python-version 3.10 --runtime-abi cp310\n"
-            "  构建离线包(不嵌入运行时): procvision-cli package ./algorithm-example --no-embed-python\n"
+            "  构建离线包(嵌入运行时): procvision-cli package ./algorithm-example --embed-python --python-runtime <path_to_embeddable> --runtime-python-version 3.10 --runtime-abi cp310\n"
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -719,7 +718,7 @@ def main() -> None:
     p = sub.add_parser(
         "package",
         help="构建离线交付 zip 包",
-        description="下载 wheels 并打包源码/manifest/requirements/assets；默认包含 Python 运行时（可用 --no-embed-python 关闭）",
+        description="下载 wheels 并打包源码/manifest/requirements/assets；默认不含 Python 运行时（可用 --embed-python 开启）",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("project", type=str, help="算法项目根目录")
@@ -731,8 +730,7 @@ def main() -> None:
     p.add_argument("-i", "--implementation", type=str, default=None, help="Python 实现 (如 cp、pp)，默认读取缓存或使用 cp")
     p.add_argument("-b", "--abi", type=str, default=None, help="ABI (如 cp310)，默认读取缓存或使用 cp310")
     p.add_argument("-s", "--skip-download", action="store_true", help="跳过依赖下载，仅打包现有内容")
-    p.add_argument("--embed-python", action="store_true", default=True, help="将 Python 运行时一并打包（默认开启）")
-    p.add_argument("--no-embed-python", action="store_false", dest="embed_python", help="不打包 Python 运行时")
+    p.add_argument("--embed-python", action="store_true", default=False, help="将 Python 运行时一并打包（默认关闭）")
     p.add_argument("--python-runtime", type=str, default=None, help="Python 运行时目录（如 Windows embeddable 包解压目录）")
     p.add_argument("--runtime-python-version", type=str, default=None, help="运行时 Python 版本（如 3.10）")
     p.add_argument("--runtime-abi", type=str, default=None, help="运行时 ABI（如 cp310）")
