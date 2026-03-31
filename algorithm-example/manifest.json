@@ -1,0 +1,7 @@
+{
+  "name": "algorithm-example",
+  "version": "1.0.0",
+  "entry_point": "algorithm_example.main:AlgorithmExample",
+  "description": "示例算法"
+}
+

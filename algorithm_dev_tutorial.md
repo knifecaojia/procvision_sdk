@@ -96,6 +96,17 @@ def normalize_image(img: Any, name: str) -> np.ndarray:
 - 校验入口类可导入且继承 `BaseAlgorithm`
 - 校验 `execute` 的返回结构与关键约束（`result_status`、NG 必备字段、`defect_rects≤20`）
 
+机制与原理（开发必读）：
+- 默认模式（不带 `--full`）在当前 Python 环境中执行：导入入口类 + 调用一次 `execute` 烟测
+  - dummy 入参：`step_index=1`、`step_desc="validate-smoke"`、两张 `480×640×3 uint8` 的零矩阵图、`guide_info=[]`
+  - 校验点：返回必须是 dict；`status∈{OK,ERROR}`；OK 时 `data.result_status∈{OK,NG}`；NG 必填 `ng_reason/defect_rects` 且 `defect_rects≤20`
+  - 注意：不会安装依赖；缺依赖会在 import/execute 阶段直接失败
+- `--full` 模式通过 adapter 子进程执行：握手 + call + result/error
+  - 更接近生产 Runner 行为（stdio 协议 + 共享内存双图）
+  - 默认启用严格 stdout 检测：算法若向 stdout 输出任何内容会被判失败
+  - `--tail-logs` 可实时查看子进程 stderr 日志
+- `--zip` 仅检查 zip 包结构是否包含 `manifest.json/requirements.txt/wheels/`，不检查 requirements 是否完整
+
 用法：
 ```bash
 procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--full] [--entry <module:Class>] [--tail-logs] [--json]

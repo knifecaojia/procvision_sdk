@@ -158,3 +158,4 @@ wheels/
 *.zip
 procvision_sdk.wiki/
 algorithm_dev_quickstart.pdf
+data/
