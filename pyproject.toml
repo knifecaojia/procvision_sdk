@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "procvision-algorithm-sdk"
-version = "0.3.1"
+version = "0.3.2"
 description = "ProcVision Algorithm SDK"
 authors = [
     {name = "Southwest AI Team", email = "ai@southwest.com"},
