@@ -209,6 +209,26 @@ procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--full] [-
 - `--tail-logs`：`--full` 模式实时跟随子进程 `stderr` 日志
 - `--json`：输出 JSON 报告（用于 CI/脚本）
 
+校验机制与原理（算法开发必读）：
+
+- 默认模式（不带 `--full`）：在当前 Python 环境内做“静态+轻量烟测”校验
+  - 读取并解析 `manifest.json`
+  - 检查必填字段：`name/version/entry_point`
+  - 按 `entry_point` 动态导入入口类，并检查是否继承 `BaseAlgorithm`
+  - 调用一次 `execute` 做烟测：
+    - 传入 dummy 数据：`step_index=1`、`step_desc="validate-smoke"`、两张 `480×640×3 uint8` 的零矩阵图、`guide_info=[]`
+    - 校验返回结构：`status`、`data.result_status`、NG 必填字段、`defect_rects≤20`
+  - 重要说明：该模式不会安装依赖；入口导入/execute 成功与否取决于你当前虚拟环境是否已安装算法依赖
+- `--full` 模式：以“生产同款 adapter 子进程+协议”做完整链路校验
+  - 以子进程启动 `procvision_algorithm_sdk.adapter`，并将 `cwd` 设置为项目根目录
+  - 通过 stdio 帧协议完成握手（hello）并发起一次 `call`
+  - `call.data` 会包含：`step_index/step_desc/guide_info` 与双图的共享内存引用（`*_image_shm_id` + `*_image_meta`）
+  - `--tail-logs` 会实时把子进程 `stderr` 输出到当前控制台，便于定位导入/执行异常
+  - 该模式会严格检测 stdout 污染（stdout 一旦输出非协议帧内容会判失败）
+- `--zip` 模式：只做包结构检查
+  - 仅检查 zip 内是否存在 `manifest.json`、`requirements.txt`、`wheels/` 等关键文件/目录
+  - 不校验 requirements 是否“覆盖全部三方依赖”，也不校验 wheels 是否能在目标环境安装成功
+
 ### run 参数说明
 
 用途：

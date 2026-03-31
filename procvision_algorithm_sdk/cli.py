@@ -167,6 +167,42 @@ def _print_run_human(result: Dict[str, Any]) -> None:
         print(f"  defect_rects: {len(dr)}")
 
 
+_TORCH_CUDA_INDEX_MAP = {
+    "cu118": "https://download.pytorch.org/whl/cu118",
+    "cu121": "https://download.pytorch.org/whl/cu121",
+    "cu124": "https://download.pytorch.org/whl/cu124",
+    "cu126": "https://download.pytorch.org/whl/cu126",
+}
+
+
+def _detect_torch_cuda_index_url() -> Optional[str]:
+    try:
+        import torch as _torch
+        ver = _torch.version.cuda
+        if not ver:
+            return None
+        cuda_key = "cu" + ver.replace(".", "")[:3]
+        return _TORCH_CUDA_INDEX_MAP.get(cuda_key)
+    except Exception:
+        return None
+
+
+def _requirements_has_torch(req_path: str) -> bool:
+    try:
+        with open(req_path, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip().lower()
+                if not s or s.startswith("#") or s.startswith("-"):
+                    continue
+                if s.startswith("torch==") or s.startswith("torch>") or s.startswith("torch<") or s.startswith("torch["):
+                    return True
+                if s.startswith("pytorch"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def package(
     project: str,
     output: Optional[str],
@@ -245,6 +281,11 @@ def package(
         ab = abi or cfg.get("abi") or "cp310"
         cmd += ["--platform", wp, "--python-version", pv, "--implementation", impl, "--abi", ab]
         cmd += ["--only-binary=:all:"]
+        torch_url = None
+        if _requirements_has_torch(req_path):
+            torch_url = _detect_torch_cuda_index_url()
+        if torch_url:
+            cmd += ["--extra-index-url", torch_url]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             output = (res.stderr or "") + ("\n" + res.stdout if res.stdout else "")

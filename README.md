@@ -157,6 +157,11 @@ class MyAlgo(BaseAlgorithm):
 - 校验 `manifest.json` 必备字段、入口可导入、`execute` 返回结构是否符合约束
 - 可选校验离线 zip 的结构完整性（manifest/requirements/wheels）
 
+机制与原理（开发必读）：
+- 默认模式（不带 `--full`）：在当前 Python 环境内导入入口类并调用一次 `execute` 烟测（dummy 双图 + `guide_info=[]`），用于快速发现“入口不可导入/返回结构不对”。不会安装依赖。
+- `--full`：通过 adapter 子进程走完整 stdio 协议与共享内存路径，更接近生产 Runner 行为；可用 `--tail-logs` 跟随 stderr；默认严格检测 stdout 污染。
+- `--zip`：仅检查 zip 结构是否包含关键文件（不会校验 requirements 是否完整、也不会校验 wheels 是否可在目标环境安装）。
+
 用法：
 ```bash
 procvision-cli validate [project] [--manifest <path>] [--zip <path>] [--full] [--entry <module:Class>] [--tail-logs] [--json]
